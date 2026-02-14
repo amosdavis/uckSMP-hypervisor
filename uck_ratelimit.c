@@ -10,6 +10,7 @@
 #include <linux/slab.h>
 #include <linux/jiffies.h>
 #include <linux/spinlock.h>
+#include <linux/moduleparam.h>
 
 #include "uck_internal.h"
 

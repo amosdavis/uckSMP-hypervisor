@@ -10,6 +10,7 @@
  */
 
 #include <linux/slab.h>
+#include <linux/moduleparam.h>
 
 #include "uck_internal.h"
 

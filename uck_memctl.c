@@ -6,6 +6,7 @@
  */
 
 #include <linux/mm.h>
+#include <linux/moduleparam.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 
