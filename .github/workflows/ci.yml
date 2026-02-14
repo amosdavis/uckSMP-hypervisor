@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-tools:
+    name: Build userspace tools
+    runs-on: ubuntu-latest
+    container: debian:bookworm
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential git ca-certificates
+
+      - uses: actions/checkout@v4
+
+      - name: Build userspace tools
+        run: make tools
+
+      - name: Upload userspace tools
+        uses: actions/upload-artifact@v4
+        with:
+          name: ucksmp-tools-amd64
+          path: |
+            uckd
+            uckctl
+            uck_smp
+            uck_run
+            uck_test
+            uck_restore
+
+  build-module:
+    name: Build kernel module (linux-${{ matrix.kernel }})
+    runs-on: ubuntu-latest
+    container: ${{ matrix.container }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - kernel: '6.1'
+            container: debian:bookworm
+            headers: linux-headers-6.1.0-28-amd64
+          - kernel: '6.6'
+            container: debian:trixie
+            headers: linux-headers-6.6.13+bpo-amd64
+          - kernel: latest
+            container: debian:sid
+            headers: linux-headers-amd64
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential git ca-certificates kmod \
+            ${{ matrix.headers }}
+
+      - uses: actions/checkout@v4
+
+      - name: Determine kernel build directory
+        id: kdir
+        run: |
+          KDIR=$(ls -d /usr/src/linux-headers-*-amd64 2>/dev/null | head -1 || \
+                 ls -d /lib/modules/*/build 2>/dev/null | head -1)
+          echo "kdir=${KDIR}" >> "$GITHUB_OUTPUT"
+          echo "Using KDIR=${KDIR}"
+
+      - name: Build kernel module
+        run: make -C ${{ steps.kdir.outputs.kdir }} M=$(pwd) modules
+
+      - name: Upload kernel module
+        uses: actions/upload-artifact@v4
+        with:
+          name: ucksmp-module-linux-${{ matrix.kernel }}
+          path: uck.ko

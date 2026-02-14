@@ -1,0 +1,170 @@
+name: Deploy APT Repository
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build-debs:
+    name: Build Debian packages
+    runs-on: ubuntu-latest
+    container: debian:bookworm
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential fakeroot dpkg-dev git ca-certificates
+
+      - uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="0.1.0-$(echo ${GITHUB_SHA} | cut -c1-7)"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Building version: ${VERSION}"
+
+      - name: Build .deb packages
+        run: |
+          chmod +x scripts/build-deb.sh
+          scripts/build-deb.sh "${{ steps.version.outputs.version }}"
+
+      - name: Upload deb artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-packages
+          path: build-deb/*.deb
+
+  deploy-apt:
+    name: Deploy APT repository
+    needs: build-debs
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download deb packages
+        uses: actions/download-artifact@v4
+        with:
+          name: deb-packages
+          path: apt-repo/pool/main/
+
+      - name: Setup GPG key
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: |
+          if [ -n "${GPG_PRIVATE_KEY}" ]; then
+            echo "${GPG_PRIVATE_KEY}" | gpg --batch --import
+            echo "Using configured GPG key from secrets."
+          else
+            gpg --batch --gen-key <<-'GPGEOF'
+          %no-protection
+          Key-Type: RSA
+          Key-Length: 4096
+          Name-Real: UCK SMP Hypervisor
+          Name-Email: amosdavis@users.noreply.github.com
+          Expire-Date: 0
+          %commit
+          GPGEOF
+            echo ""
+            echo "⚠️  Using auto-generated GPG key. For persistent signing, add"
+            echo "    APT_GPG_PRIVATE_KEY secret to your repository settings."
+          fi
+          GPG_KEY_ID=$(gpg --list-secret-keys --keyid-format long | grep sec | awk '{print $2}' | cut -d'/' -f2)
+          echo "GPG_KEY_ID=${GPG_KEY_ID}" >> "$GITHUB_ENV"
+
+      - name: Export public GPG key
+        run: |
+          gpg --export --armor "${GPG_KEY_ID}" > apt-repo/gpg.key
+
+      - name: Generate APT repository metadata
+        run: |
+          cd apt-repo
+          mkdir -p dists/stable/main/binary-amd64
+
+          # Generate Packages file
+          dpkg-scanpackages --multiversion pool/main/ > dists/stable/main/binary-amd64/Packages
+          gzip -k dists/stable/main/binary-amd64/Packages
+
+          # Generate Release file
+          cd dists/stable
+          cat > Release <<-'EOF'
+          Origin: UCK SMP Hypervisor
+          Label: ucksmp
+          Suite: stable
+          Codename: stable
+          Architectures: amd64 all
+          Components: main
+          Description: UCK SMP Hypervisor APT Repository
+          EOF
+
+          # Add checksums
+          apt-ftparchive release . >> Release
+
+          # Sign the Release file
+          gpg --batch --yes --default-key "${GPG_KEY_ID}" \
+              -abs -o Release.gpg Release
+          gpg --batch --yes --default-key "${GPG_KEY_ID}" \
+              --clearsign -o InRelease Release
+
+      - name: Create index page
+        run: |
+          cat > apt-repo/index.html <<-'HTMLEOF'
+          <!DOCTYPE html>
+          <html>
+          <head><title>UCK SMP Hypervisor APT Repository</title></head>
+          <body>
+          <h1>UCK SMP Hypervisor APT Repository</h1>
+          <h2>Installation</h2>
+          <pre><code># Add the GPG key
+          curl -fsSL https://amosdavis.github.io/uckSMP-hypervisor/gpg.key \
+            | sudo gpg --dearmor -o /usr/share/keyrings/ucksmp.gpg
+
+          # Add the repository
+          echo "deb [signed-by=/usr/share/keyrings/ucksmp.gpg] \
+            https://amosdavis.github.io/uckSMP-hypervisor stable main" \
+            | sudo tee /etc/apt/sources.list.d/ucksmp.list
+
+          # Install
+          sudo apt update
+          sudo apt install ucksmp-dkms ucksmp-tools
+          </code></pre>
+          <h2>Packages</h2>
+          <ul>
+          <li><strong>ucksmp-dkms</strong> — Kernel module (auto-builds via DKMS)</li>
+          <li><strong>ucksmp-tools</strong> — Userspace tools (uckd, uckctl, uck_smp, etc.)</li>
+          </ul>
+          <p><a href="https://github.com/amosdavis/uckSMP-hypervisor">GitHub Repository</a></p>
+          </body>
+          </html>
+          HTMLEOF
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: apt-repo
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

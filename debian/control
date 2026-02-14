@@ -1,0 +1,35 @@
+Source: ucksmp
+Section: kernel
+Priority: optional
+Maintainer: Amos Davis <amosdavis@users.noreply.github.com>
+Build-Depends: debhelper-compat (= 13), dkms, build-essential
+Standards-Version: 4.6.2
+Homepage: https://github.com/amosdavis/uckSMP-hypervisor
+
+Package: ucksmp-dkms
+Architecture: all
+Depends: dkms, ${misc:Depends}
+Description: UCK SMP Hypervisor - kernel module (DKMS)
+ A Linux kernel module that turns multiple QEMU VMs into a single SMP-like
+ system with transparent shared memory, automatic fork distribution across
+ nodes, distributed command execution, and unified resource reporting.
+ .
+ This package provides the kernel module source and DKMS configuration to
+ automatically build and install uck.ko for your running kernel.
+
+Package: ucksmp-tools
+Architecture: amd64
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Recommends: ucksmp-dkms
+Description: UCK SMP Hypervisor - userspace tools
+ A Linux kernel module that turns multiple QEMU VMs into a single SMP-like
+ system with transparent shared memory, automatic fork distribution across
+ nodes, distributed command execution, and unified resource reporting.
+ .
+ This package provides the userspace tools:
+  - uckd: daemon that configures the kernel module via ioctls at boot
+  - uckctl: CLI for cluster status, jobs, exec, migrate
+  - uck_smp: SMP wrapper that registers a process for fork distribution
+  - uck_run: parallel runner for distributed command execution
+  - uck_test: shared memory test tool
+  - uck_restore: process restore stub for migrated processes

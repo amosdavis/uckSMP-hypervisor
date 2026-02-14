@@ -1,0 +1,35 @@
+#!/usr/bin/make -f
+
+export DH_VERBOSE = 1
+
+%:
+	dh $@ --with dkms
+
+override_dh_auto_build:
+	$(MAKE) tools
+
+override_dh_auto_install:
+	# DKMS source tree
+	install -d debian/ucksmp-dkms/usr/src/ucksmp-0.1.0
+	cp uck_main.c uck_region.c uck_page.c uck_net.c uck_heartbeat.c \
+	   uck_sysinfo.c uck_proc.c uck_migrate.c uck_load.c uck_exec.c \
+	   uck_hyper.c uck_batch.c uck_futex.c uck_cgroup.c uck_rdma.c \
+	   uck_join.c \
+	   uck.h uck_internal.h Kbuild Makefile \
+	   debian/ucksmp-dkms/usr/src/ucksmp-0.1.0/
+	install -m 644 debian/dkms.conf \
+	   debian/ucksmp-dkms/usr/src/ucksmp-0.1.0/dkms.conf
+	# Userspace tools
+	install -d debian/ucksmp-tools/usr/sbin
+	install -m 755 uckd debian/ucksmp-tools/usr/sbin/uckd
+	install -m 755 uckctl debian/ucksmp-tools/usr/sbin/uckctl
+	install -m 755 uck_smp debian/ucksmp-tools/usr/sbin/uck_smp
+	install -m 755 uck_run debian/ucksmp-tools/usr/sbin/uck_run
+	install -m 755 uck_test debian/ucksmp-tools/usr/sbin/uck_test
+	install -m 755 uck_restore debian/ucksmp-tools/usr/sbin/uck_restore
+
+override_dh_auto_clean:
+	rm -f uckd uck_test uckctl uck_restore uck_run uck_smp
+
+override_dh_dkms:
+	dh_dkms -pucksmp-dkms -V 0.1.0

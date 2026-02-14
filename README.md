@@ -97,16 +97,56 @@ CPUs and memory of your entire cluster.
 └──────────────────────────────────────────────────────────────┘
 ```
 
+## Installation
+
+### From APT Repository (Recommended)
+
+```bash
+# Add the GPG key
+curl -fsSL https://amosdavis.github.io/uckSMP-hypervisor/gpg.key \
+  | sudo gpg --dearmor -o /usr/share/keyrings/ucksmp.gpg
+
+# Add the repository
+echo "deb [signed-by=/usr/share/keyrings/ucksmp.gpg] \
+  https://amosdavis.github.io/uckSMP-hypervisor stable main" \
+  | sudo tee /etc/apt/sources.list.d/ucksmp.list
+
+# Install kernel module (DKMS) + userspace tools
+sudo apt update
+sudo apt install ucksmp-dkms ucksmp-tools
+```
+
+The DKMS package automatically builds `uck.ko` for your running kernel
+and rebuilds it whenever you install a new kernel.
+
+### From GitHub Releases
+
+Download `.deb` packages from the
+[Releases page](https://github.com/amosdavis/uckSMP-hypervisor/releases)
+and install with `sudo dpkg -i ucksmp-dkms_*.deb ucksmp-tools_*.deb`.
+
 ## Quick Start
 
 ### Prerequisites
 
-- WSL2 with Ubuntu (or native Linux)
-- QEMU (`apt install qemu-system-x86`)
-- Two Debian Bookworm VM images (kernel 6.1.0-42-amd64)
-- Kernel headers installed inside the VMs
+- Debian Bookworm or later (x86_64)
+- Kernel headers installed (`apt install linux-headers-$(uname -r)`)
+- QEMU for multi-VM clusters (`apt install qemu-system-x86`)
 
-### Building
+### Building from Source
+
+```bash
+# Build kernel module + userspace tools
+make
+
+# Or build only userspace tools
+make tools
+
+# Install into a target directory
+make install DESTDIR=/mnt/node1
+```
+
+### Building in a VM (chroot method)
 
 ```bash
 # Mount a VM image and build inside it (kernel headers required)

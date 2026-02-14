@@ -1,0 +1,7 @@
+ucksmp (0.1.0-1) stable; urgency=low
+
+  * Initial release.
+  * Kernel module (DKMS) for transparent SMP across QEMU VMs.
+  * Userspace tools: uckd, uckctl, uck_smp, uck_run, uck_test, uck_restore.
+
+ -- Amos Davis <amosdavis@users.noreply.github.com>  Fri, 14 Feb 2026 14:00:00 +0000
