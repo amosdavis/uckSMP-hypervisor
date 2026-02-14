@@ -196,6 +196,7 @@ extern struct uck_state uck_state;
 /* uck_region.c */
 struct uck_region *uck_find_region(u64 region_id);
 int uck_create_region(struct uck_region_info *info);
+bool uck_region_check_access(struct uck_region *region, bool write);
 int uck_join_region(struct uck_region_info *info);
 void uck_cleanup_regions(void);
 

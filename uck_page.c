@@ -64,7 +64,7 @@ struct uck_page_entry *uck_page_alloc_entry(struct uck_region *region,
 	return entry;
 }
 
-static void uck_page_entry_release(struct kref *kref)
+static void __maybe_unused uck_page_entry_release(struct kref *kref)
 {
 	struct uck_page_entry *entry =
 		container_of(kref, struct uck_page_entry, refcount);
@@ -72,11 +72,6 @@ static void uck_page_entry_release(struct kref *kref)
 		void *kaddr = page_address(entry->page);
 		if (kaddr)
 			memzero_explicit(kaddr, PAGE_SIZE);
-		else {
-			kaddr = kmap(entry->page);
-			memzero_explicit(kaddr, PAGE_SIZE);
-			kunmap(entry->page);
-		}
 		__free_page(entry->page);
 		uck_memctl_account_free(1);
 	}
@@ -96,11 +91,6 @@ void uck_page_free_all(struct uck_region *region)
 			void *kaddr = page_address(entry->page);
 			if (kaddr)
 				memzero_explicit(kaddr, PAGE_SIZE);
-			else {
-				kaddr = kmap(entry->page);
-				memzero_explicit(kaddr, PAGE_SIZE);
-				kunmap(entry->page);
-			}
 			__free_page(entry->page);
 			uck_memctl_account_free(1);
 		}
