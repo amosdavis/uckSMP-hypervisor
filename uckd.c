@@ -24,6 +24,8 @@
 #include <sys/ioctl.h>
 #include <arpa/inet.h>
 #include <getopt.h>
+#include <sys/stat.h>
+#include <errno.h>
 
 #include "uck.h"
 
@@ -149,6 +151,28 @@ int main(int argc, char *argv[])
 	if (node_id < 0 || !ip_str) {
 		fprintf(stderr, "Error: --node-id and --ip are required\n");
 		usage(argv[0]);
+		return 1;
+	}
+
+	/* Configuration validation */
+	if (port == 0 || port > 65535) {
+		fprintf(stderr, "uckd: invalid port %d\n", port);
+		return 1;
+	}
+	if ((unsigned int)node_id >= UCK_MAX_NODES) {
+		fprintf(stderr, "uckd: node_id %d exceeds max %u\n",
+			node_id, UCK_MAX_NODES - 1);
+		return 1;
+	}
+	if (num_remotes < 1) {
+		fprintf(stderr, "uckd: need at least 1 remote node (got %d)\n",
+			num_remotes);
+		return 1;
+	}
+
+	/* Create /run/uck/ directory for secure state files */
+	if (mkdir("/run/uck", 0700) < 0 && errno != EEXIST) {
+		perror("uckd: failed to create /run/uck");
 		return 1;
 	}
 

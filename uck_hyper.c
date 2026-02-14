@@ -116,30 +116,62 @@ void uck_hyper_unregister_pid(pid_t pid)
 
 /*
  * Pick the next node for fork distribution.
- * Uses round-robin across alive nodes for even distribution.
+ * Uses weighted fair scheduling based on multi-factor scoring.
  * Returns 0 if we should keep the child local.
  */
 static u32 uck_hyper_pick_node(void)
 {
-	int i, idx, count;
-	u32 candidates[UCK_MAX_NODES];
+	u32 target_node;
 
-	count = 0;
-
-	/* Include local node */
-	candidates[count++] = uck_state.local_node.node_id;
-
-	/* Include alive remote nodes */
-	for (i = 0; i < uck_state.num_nodes; i++) {
-		if (uck_state.nodes[i].alive)
-			candidates[count++] = uck_state.nodes[i].info.node_id;
-	}
-
-	if (count <= 1)
+	if (uck_state.num_nodes == 0)
 		return 0; /* No remote nodes, keep local */
 
-	idx = atomic_inc_return(&uck_rr_index) % count;
-	return candidates[idx];
+	/* Weighted fair scheduling: score = cpu_count * 100 - current_load * 50
+	 * Higher score = better target for fork distribution */
+	{
+		int best_node = -1;
+		int best_score = -1;
+		int i;
+
+		for (i = 0; i < uck_state.num_nodes; i++) {
+			struct uck_remote_node *node = &uck_state.nodes[i];
+			int score;
+
+			if (!node->alive || node->suspect)
+				continue;
+
+			/* Multi-factor scoring */
+			score = node->stats.nr_cpus * 100;
+			score -= node->stats.load_avg * 50;
+			score -= node->stats.nr_running * 10;
+
+			if (score > best_score) {
+				best_score = score;
+				best_node = i;
+			}
+		}
+
+		if (best_node < 0) {
+			pr_warn("uck: no suitable node for fork distribution\n");
+			return 0;
+		}
+
+		/* Check resource limits on target node */
+		{
+			struct uck_remote_node *target = &uck_state.nodes[best_node];
+			if (target->cgroup_stats.nr_tasks >= uck_state.max_tasks_per_node) {
+				pr_info("uck: node %u at task limit (%u), "
+					"keeping fork local\n",
+					target->info.node_id,
+					uck_state.max_tasks_per_node);
+				return 0;
+			}
+		}
+
+		target_node = uck_state.nodes[best_node].info.node_id;
+	}
+
+	return target_node;
 }
 
 /*

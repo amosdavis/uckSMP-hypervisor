@@ -4,6 +4,7 @@
 
 #include <linux/slab.h>
 #include <linux/mm.h>
+#include <linux/string.h>
 #include "uck_internal.h"
 
 struct uck_page_entry *uck_page_lookup(struct uck_region *region, pgoff_t index)
@@ -52,13 +53,34 @@ struct uck_page_entry *uck_page_alloc_entry(struct uck_region *region,
 		return NULL;
 
 	entry->index = index;
-	entry->state = UCK_PAGE_INVALID;
+	atomic_set(&entry->state, UCK_PAGE_INVALID);
+	init_waitqueue_head(&entry->waitq);
+	kref_init(&entry->refcount);
 	entry->page = NULL;
 	entry->owner_node = region->info.owner_node;
 	entry->write_mapped = false;
 
 	uck_page_insert(region, entry);
 	return entry;
+}
+
+static void uck_page_entry_release(struct kref *kref)
+{
+	struct uck_page_entry *entry =
+		container_of(kref, struct uck_page_entry, refcount);
+	if (entry->page) {
+		void *kaddr = page_address(entry->page);
+		if (kaddr)
+			memzero_explicit(kaddr, PAGE_SIZE);
+		else {
+			kaddr = kmap(entry->page);
+			memzero_explicit(kaddr, PAGE_SIZE);
+			kunmap(entry->page);
+		}
+		__free_page(entry->page);
+		uck_memctl_account_free(1);
+	}
+	kfree(entry);
 }
 
 void uck_page_free_all(struct uck_region *region)
@@ -70,8 +92,18 @@ void uck_page_free_all(struct uck_region *region)
 	while ((n = rb_first(&region->pages))) {
 		entry = container_of(n, struct uck_page_entry, rb_node);
 		rb_erase(n, &region->pages);
-		if (entry->page)
+		if (entry->page) {
+			void *kaddr = page_address(entry->page);
+			if (kaddr)
+				memzero_explicit(kaddr, PAGE_SIZE);
+			else {
+				kaddr = kmap(entry->page);
+				memzero_explicit(kaddr, PAGE_SIZE);
+				kunmap(entry->page);
+			}
 			__free_page(entry->page);
+			uck_memctl_account_free(1);
+		}
 		kfree(entry);
 	}
 	mutex_unlock(&region->lock);

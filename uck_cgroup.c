@@ -24,7 +24,7 @@
  * In a production system this would hook into actual cgroup controllers;
  * here we approximate by scanning runnable user tasks.
  */
-void uck_cgroup_update_local(void)
+int uck_cgroup_update_local(void)
 {
 	struct task_struct *task;
 	u32 nr_tasks = 0;
@@ -57,12 +57,28 @@ void uck_cgroup_update_local(void)
 	}
 	rcu_read_unlock();
 
+	/* Enforce task limit per node */
+	if (uck_state.max_tasks_per_node > 0 &&
+	    nr_tasks >= uck_state.max_tasks_per_node) {
+		pr_warn("uck: task limit reached (%u/%u)\n",
+			nr_tasks, uck_state.max_tasks_per_node);
+		return -ENOSPC;
+	}
+
+	/* Enforce page limit */
+	if (!uck_memctl_can_alloc(mem_usage / PAGE_SIZE)) {
+		pr_warn("uck: memory limit reached\n");
+		return -ENOMEM;
+	}
+
 	uck_state.local_cgroup_stats.node_id =
 		uck_state.local_node.node_id;
 	uck_state.local_cgroup_stats.nr_tasks = nr_tasks;
 	uck_state.local_cgroup_stats.cpu_usage_ns = cpu_usage;
 	uck_state.local_cgroup_stats.mem_usage = mem_usage;
 	uck_state.local_cgroup_stats.mem_limit = 0; /* unlimited */
+
+	return 0;
 }
 
 /*

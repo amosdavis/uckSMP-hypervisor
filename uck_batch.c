@@ -208,15 +208,38 @@ int uck_build_prefetch_list(struct uck_region *region, pgoff_t fault_index,
 	pgoff_t start;
 	int count = 0;
 	pgoff_t idx;
+	int nr_prefetch;
 
 	max_index = region->info.size >> PAGE_SHIFT;
 
 	/* Always include the faulting page first */
 	out_indices[count++] = fault_index;
 
-	/* Add adjacent pages */
-	start = (fault_index > UCK_PREFETCH_WINDOW) ?
-		fault_index - UCK_PREFETCH_WINDOW : 0;
+	/* Adaptive prefetch: track access pattern */
+	{
+		static unsigned long last_page_index;
+		static int sequential_count;
+		static int prefetch_window = UCK_PREFETCH_WINDOW;
+
+		if (fault_index == last_page_index + 1) {
+			/* Sequential access detected */
+			sequential_count++;
+			if (sequential_count > 4 && prefetch_window < 32)
+				prefetch_window = min(prefetch_window * 2, 32);
+		} else if (fault_index != last_page_index) {
+			/* Random access detected */
+			sequential_count = 0;
+			prefetch_window = max(prefetch_window / 2, 1);
+		}
+		last_page_index = fault_index;
+
+		/* Use adaptive window instead of fixed */
+		nr_prefetch = prefetch_window;
+	}
+
+	/* Add adjacent pages using adaptive window */
+	start = (fault_index > (pgoff_t)nr_prefetch) ?
+		fault_index - nr_prefetch : 0;
 
 	for (idx = start; idx < max_index && count < max_pages; idx++) {
 		struct uck_page_entry *entry;

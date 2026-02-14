@@ -2,7 +2,7 @@
  * uck_restore.c - Userspace process restore stub
  *
  * Called by the kernel module (via call_usermodehelper) after receiving
- * a migrated process. Reads serialized state from /tmp/uck_migrate_state,
+ * a migrated process. Reads serialized state from /run/uck/uck_migrate_state,
  * reconstructs the process, and jumps to the saved instruction pointer.
  *
  * This is intentionally simple: it restores anonymous mappings and
@@ -20,10 +20,52 @@
 #include <signal.h>
 #include <ucontext.h>
 #include <errno.h>
+#include <sys/prctl.h>
+#include <linux/seccomp.h>
+#include <linux/filter.h>
 
 #include "uck.h"
 
 static struct uck_proc_state_hdr state_hdr;
+
+/* Seccomp-bpf filter for restored processes */
+static void uck_apply_seccomp_filter(void)
+{
+	struct sock_filter filter[] = {
+		/* Load syscall number */
+		BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+			 offsetof(struct seccomp_data, nr)),
+		/* Block ptrace (101) */
+		BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_ptrace, 0, 1),
+		BPF_STMT(BPF_RET | BPF_K,
+			 SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA)),
+		/* Block mount (165) */
+		BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_mount, 0, 1),
+		BPF_STMT(BPF_RET | BPF_K,
+			 SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA)),
+		/* Block reboot (169) */
+		BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_reboot, 0, 1),
+		BPF_STMT(BPF_RET | BPF_K,
+			 SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA)),
+		/* Block kexec_load (246) */
+		BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_kexec_load, 0, 1),
+		BPF_STMT(BPF_RET | BPF_K,
+			 SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA)),
+		/* Block init_module (175) */
+		BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_init_module, 0, 1),
+		BPF_STMT(BPF_RET | BPF_K,
+			 SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA)),
+		/* Allow all other syscalls */
+		BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+	};
+	struct sock_fprog prog = {
+		.len = sizeof(filter) / sizeof(filter[0]),
+		.filter = filter,
+	};
+
+	prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+	prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog);
+}
 
 /* Restore saved registers and jump using setcontext (reliable) */
 static void restore_and_jump(void)
@@ -65,7 +107,7 @@ int main(int argc, char *argv[])
 	struct uck_fd_desc *fds = NULL;
 	int nr_pages = 0;
 
-	fd = open("/tmp/uck_migrate_state", O_RDONLY);
+	fd = open("/run/uck/uck_migrate_state", O_RDONLY);
 	if (fd < 0) {
 		perror("uck_restore: open state file");
 		return 1;
@@ -207,7 +249,10 @@ int main(int argc, char *argv[])
 		(unsigned long long)state_hdr.sp);
 
 	/* Remove the state file */
-	unlink("/tmp/uck_migrate_state");
+	unlink("/run/uck/uck_migrate_state");
+
+	/* Apply seccomp-bpf filter to restrict dangerous syscalls */
+	uck_apply_seccomp_filter();
 
 	/* Jump to the restored process */
 	restore_and_jump();

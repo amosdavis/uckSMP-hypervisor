@@ -183,6 +183,68 @@ static const struct proc_ops uck_proc_jobs_ops = {
 	.proc_release = single_release,
 };
 
+/* /proc/uck/latency - Page fetch latency histogram */
+static int uck_latency_show(struct seq_file *m, void *v)
+{
+	int i;
+
+	seq_puts(m, "Page fetch latency histogram (microseconds):\n");
+	seq_puts(m, "  Bucket         Count\n");
+	for (i = 0; i < 8; i++) {
+		unsigned long bucket_us = 1UL << (i + 4);  /* 16, 32, ... */
+		seq_printf(m, "  <%5lu us    %8lu\n", bucket_us,
+			   atomic_long_read(&uck_state.latency_hist[i]));
+	}
+	return 0;
+}
+
+/* /proc/uck/pages - Page state distribution */
+static int uck_pages_show(struct seq_file *m, void *v)
+{
+	seq_printf(m, "Page states:\n");
+	seq_printf(m, "  Total allocated:  %lu\n",
+		   atomic_long_read(&uck_state.total_pages));
+	seq_printf(m, "  Shared:           %lu\n",
+		   atomic_long_read(&uck_state.pages_shared));
+	seq_printf(m, "  Exclusive:        %lu\n",
+		   atomic_long_read(&uck_state.pages_exclusive));
+	seq_printf(m, "  In-transit:       %lu\n",
+		   atomic_long_read(&uck_state.pages_transit));
+	return 0;
+}
+
+/* /proc/uck/errors - Error counters */
+static int uck_errors_show(struct seq_file *m, void *v)
+{
+	seq_printf(m, "Error counters:\n");
+	seq_printf(m, "  auth:       %lu\n",
+		   atomic_long_read(&uck_state.err_auth));
+	seq_printf(m, "  migrate:    %lu\n",
+		   atomic_long_read(&uck_state.err_migrate));
+	seq_printf(m, "  ratelimit:  %lu\n",
+		   atomic_long_read(&uck_state.err_ratelimit));
+	seq_printf(m, "  futex:      %lu\n",
+		   atomic_long_read(&uck_state.err_futex));
+	seq_printf(m, "  page_fault: %lu\n",
+		   atomic_long_read(&uck_state.err_page_fault));
+	return 0;
+}
+
+/* /proc/uck/config - Configuration dump */
+static int uck_config_show(struct seq_file *m, void *v)
+{
+	seq_printf(m, "Configuration:\n");
+	seq_printf(m, "  protocol_version: %u\n", UCK_PROTOCOL_VERSION);
+	seq_printf(m, "  cluster_epoch:    %u\n", uck_state.cluster_epoch);
+	seq_printf(m, "  quorum_state:     %s\n",
+		   uck_state.quorum_active ? "active" : "degraded");
+	seq_printf(m, "  max_tasks/node:   %u\n",
+		   uck_state.max_tasks_per_node);
+	seq_printf(m, "  max_pages:        %lu\n",
+		   uck_state.max_pages);
+	return 0;
+}
+
 int uck_sysinfo_init(void)
 {
 	uck_state.proc_dir = proc_mkdir("uck", NULL);
@@ -204,12 +266,23 @@ int uck_sysinfo_init(void)
 	uck_state.proc_jobs = proc_create("jobs", 0444,
 					   uck_state.proc_dir,
 					   &uck_proc_jobs_ops);
+
+	proc_create_single("latency", 0444, uck_state.proc_dir, uck_latency_show);
+	proc_create_single("pages", 0444, uck_state.proc_dir, uck_pages_show);
+	proc_create_single("errors", 0444, uck_state.proc_dir, uck_errors_show);
+	proc_create_single("config", 0444, uck_state.proc_dir, uck_config_show);
+
 	pr_info("uck: /proc/uck created\n");
 	return 0;
 }
 
 void uck_sysinfo_exit(void)
 {
+	remove_proc_entry("latency", uck_state.proc_dir);
+	remove_proc_entry("pages", uck_state.proc_dir);
+	remove_proc_entry("errors", uck_state.proc_dir);
+	remove_proc_entry("config", uck_state.proc_dir);
+
 	if (uck_state.proc_jobs)
 		proc_remove(uck_state.proc_jobs);
 	if (uck_state.proc_status)

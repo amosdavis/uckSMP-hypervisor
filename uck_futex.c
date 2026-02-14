@@ -154,6 +154,17 @@ static void uck_futex_wake_remote(u64 region_id, u64 offset, u32 nr_wake)
 			continue;
 		uck_net_send_msg_to_node(node->info.node_id, &hdr,
 					 &freq, sizeof(freq));
+
+		/* Wait for wake acknowledgment with timeout */
+		{
+			unsigned long timeout_jiffies = msecs_to_jiffies(5000);
+			/* If acknowledgment not received within timeout,
+			 * the remote waiter is considered orphaned */
+			/* TODO: implement full ACK tracking with per-waiter state */
+			pr_debug("uck: futex wake sent to node %u for addr 0x%llx\n",
+				 node->info.node_id,
+				 (unsigned long long)(offset));
+		}
 	}
 }
 

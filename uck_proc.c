@@ -27,6 +27,7 @@
 #include <linux/mman.h>
 #include <linux/signal.h>
 #include <linux/delay.h>
+#include <linux/crc32.h>
 #include <asm/ptrace.h>
 
 #include "uck_internal.h"
@@ -290,6 +291,10 @@ static void *uck_checkpoint_process(struct task_struct *task, size_t *out_len)
 
 	mmput(mm);
 
+	/* Compute CRC32 for integrity verification */
+	hdr->crc32 = crc32(0, (const u8 *)hdr,
+			    offsetof(struct uck_proc_state_hdr, crc32));
+
 	pr_info("uck: checkpoint: %d VMAs, %d FDs, %d threads\n",
 		nr_vmas, nr_fds, nr_threads);
 
@@ -408,7 +413,7 @@ int uck_migrate_process(u32 pid, u32 dest_node)
 	struct pid *pid_struct;
 	void *state_buf;
 	size_t state_len;
-	int ret;
+	int ret, i;
 
 	if (dest_node == uck_state.local_node.node_id)
 		return -EINVAL;
@@ -434,6 +439,35 @@ int uck_migrate_process(u32 pid, u32 dest_node)
 	pr_info("uck: migrating pid %u (%s) to node %u\n",
 		pid, task->comm, dest_node);
 
+	/* Check CPU feature compatibility with destination node */
+	{
+		int dest_idx = -1;
+		for (i = 0; i < uck_state.num_nodes; i++) {
+			if (uck_state.nodes[i].info.node_id == dest_node) {
+				dest_idx = i;
+				break;
+			}
+		}
+		if (dest_idx >= 0) {
+			u64 src_features = uck_state.local_cpu_features;
+			u64 dst_features =
+				uck_state.nodes[dest_idx].cpu_features;
+			if ((src_features & dst_features) != src_features) {
+				pr_err("uck: migration rejected — "
+				       "dest node %u lacks CPU features "
+				       "(src=0x%llx dst=0x%llx)\n",
+				       dest_node, src_features,
+				       dst_features);
+				uck_audit_log("migration",
+					      "rejected: CPU feature mismatch "
+					      "src=0x%llx dst=0x%llx",
+					      src_features, dst_features);
+				put_task_struct(task);
+				return -ENOTSUP;
+			}
+		}
+	}
+
 	/* Freeze the process (all threads) */
 	{
 		struct task_struct *t;
@@ -445,6 +479,8 @@ int uck_migrate_process(u32 pid, u32 dest_node)
 	msleep(100);
 
 	/* Checkpoint */
+	uck_audit_log("migration", "checkpointing pid %d for migration "
+		      "to node %u", task_pid_nr(task), dest_node);
 	state_buf = uck_checkpoint_process(task, &state_len);
 	if (!state_buf) {
 		pr_err("uck: migrate: checkpoint failed for pid %u\n", pid);

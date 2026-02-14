@@ -27,12 +27,15 @@
 #define UCK_BATCH_MAX_PAGES  32   /* Max pages per batch request */
 #define UCK_PREFETCH_WINDOW   8   /* Adjacent pages to prefetch on fault */
 
+#define UCK_PROTOCOL_VERSION  2   /* Wire protocol version */
+
 /* Page states in the coherence protocol */
 enum uck_page_state {
 	UCK_PAGE_INVALID = 0,
 	UCK_PAGE_SHARED,
 	UCK_PAGE_MODIFIED,
 	UCK_PAGE_EXCLUSIVE,       /* Writable, sole copy */
+	UCK_PAGE_IN_TRANSIT,      /* Page being transferred between nodes */
 };
 
 /* Node identity */
@@ -52,6 +55,7 @@ struct uck_node_stats {
 	__u32 load_avg;         /* Load average * 100 (fixed point) */
 	__u32 nr_running;       /* Number of runnable tasks */
 	__u64 timestamp;        /* Sender's jiffies */
+	__u8  hmac[32];         /* HMAC-SHA256 of heartbeat payload */
 };
 
 /* Cluster-wide aggregated info (returned to userspace) */
@@ -74,6 +78,14 @@ struct uck_region_info {
 	__u64 region_id;
 	__u64 size;             /* Must be page-aligned */
 	__u32 owner_node;       /* Node that initially owns all pages */
+};
+
+/* Per-region access control */
+struct uck_region_acl {
+	__u64 region_id;
+	__u32 owner_uid;
+	__u32 owner_gid;
+	__u32 mode;           /* Unix-style: rwxrwxrwx */
 };
 
 /* Remote execution request (userspace → kernel) */
@@ -162,12 +174,21 @@ enum uck_msg_type {
 
 	/* cgroup accounting */
 	UCK_MSG_CGROUP_STATS = 70,
+
+	/* Security */
+	UCK_MSG_FUTEX_WAKE_NACK = 80,
+	UCK_MSG_MIGRATE_ABORT,
+
+	/* Quorum/fencing */
+	UCK_MSG_EPOCH_UPDATE = 90,
 };
 
 /* Remote exec wire payload (sent after msg_hdr with type UCK_MSG_EXEC_REQ) */
 struct uck_exec_wire {
 	__u32 job_id;
 	__u32 src_node;
+	__u32 uid;
+	__u32 gid;
 	char  command[512];
 	char  workdir[256];
 };
@@ -199,6 +220,8 @@ struct uck_batch_page_resp {
 struct uck_node_announce {
 	struct uck_node_info info;
 	struct uck_node_stats stats;
+	__u32 epoch;            /* Cluster epoch of announcing node */
+	__u32 _ann_pad;
 };
 
 /* Futex operation request (cross-node) */
@@ -229,6 +252,7 @@ struct uck_msg_hdr {
 	__u64 page_offset;      /* Offset within region (page-aligned) */
 	__u32 payload_len;      /* Length of data following header */
 	__u32 flags;
+	__u32 epoch;            /* Cluster epoch for quorum/fencing */
 };
 
 #define UCK_MSG_HDR_SIZE sizeof(struct uck_msg_hdr)
@@ -255,6 +279,7 @@ struct uck_proc_state_hdr {
 	/* File descriptors */
 	__u32 nr_fds;
 	__u32 _pad;
+	__u32 crc32;            /* CRC-32 of serialized state */
 };
 
 /* VMA descriptor in serialized state */
@@ -298,5 +323,7 @@ struct uck_smp_req {
 #define UCK_IOC_FUTEX          _IOWR(UCK_IOC_MAGIC, 11, struct uck_futex_req)
 #define UCK_IOC_NODE_LEAVE     _IO(UCK_IOC_MAGIC, 12)
 #define UCK_IOC_GET_CGROUP     _IOR(UCK_IOC_MAGIC, 13, struct uck_cgroup_stats)
+#define UCK_IOC_SET_REGION_ACL _IOW(UCK_IOC_MAGIC, 14, struct uck_region_acl)
+#define UCK_IOC_FORCE_NODE_STATE _IOW(UCK_IOC_MAGIC, 15, struct uck_node_info)
 
 #endif /* _UCK_H_ */

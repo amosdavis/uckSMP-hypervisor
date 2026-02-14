@@ -72,15 +72,15 @@ static vm_fault_t uck_fault(struct vm_fault *vmf)
 	/* Look up page in our local cache */
 	entry = uck_page_lookup(region, page_index);
 
-	if (entry && entry->state != UCK_PAGE_INVALID) {
-		if (is_write && entry->state == UCK_PAGE_SHARED) {
+	if (entry && uck_page_get_state(entry) != UCK_PAGE_INVALID) {
+		if (is_write && uck_page_get_state(entry) == UCK_PAGE_SHARED) {
 			/*
 			 * Write fault on a SHARED page: transition to
 			 * EXCLUSIVE state. Must invalidate copies on
 			 * other nodes before allowing the write.
 			 */
 			uck_invalidate_remote_copies(region, page_index);
-			entry->state = UCK_PAGE_EXCLUSIVE;
+			atomic_set(&entry->state, UCK_PAGE_EXCLUSIVE);
 			entry->write_mapped = true;
 
 			page = entry->page;
@@ -107,9 +107,42 @@ static vm_fault_t uck_fault(struct vm_fault *vmf)
 		}
 	}
 
+	/* Check if another CPU is already fetching this page */
+	if (uck_page_get_state(entry) == UCK_PAGE_IN_TRANSIT) {
+		mutex_unlock(&region->lock);
+		/* Wait for the in-flight fetch to complete */
+		wait_event(entry->waitq,
+			   uck_page_get_state(entry) != UCK_PAGE_IN_TRANSIT);
+		mutex_lock(&region->lock);
+		if (entry->page && uck_page_get_state(entry) != UCK_PAGE_INVALID) {
+			page = entry->page;
+			get_page(page);
+			mutex_unlock(&region->lock);
+			vmf->page = page;
+			return 0;
+		}
+		mutex_unlock(&region->lock);
+		return VM_FAULT_SIGBUS;
+	}
+
+	/* Mark page as in-transit before releasing lock */
+	uck_page_try_set_state(entry, UCK_PAGE_INVALID, UCK_PAGE_IN_TRANSIT);
+
+	/* Check memory overcommit limits */
+	if (!uck_memctl_can_alloc(1)) {
+		uck_page_try_set_state(entry, UCK_PAGE_IN_TRANSIT,
+				       UCK_PAGE_INVALID);
+		wake_up_all(&entry->waitq);
+		mutex_unlock(&region->lock);
+		return VM_FAULT_OOM;
+	}
+
 	/* Allocate a local page */
 	page = alloc_page(GFP_KERNEL | __GFP_ZERO);
 	if (!page) {
+		uck_page_try_set_state(entry, UCK_PAGE_IN_TRANSIT,
+				       UCK_PAGE_INVALID);
+		wake_up_all(&entry->waitq);
 		mutex_unlock(&region->lock);
 		return VM_FAULT_OOM;
 	}
@@ -170,6 +203,9 @@ static vm_fault_t uck_fault(struct vm_fault *vmf)
 		} else {
 			pr_err("uck: fetch page %lu from owner failed: %d\n",
 			       page_index, ret);
+			uck_page_try_set_state(entry, UCK_PAGE_IN_TRANSIT,
+					       UCK_PAGE_INVALID);
+			wake_up_all(&entry->waitq);
 			__free_page(page);
 			return VM_FAULT_SIGBUS;
 		}
@@ -180,13 +216,15 @@ static vm_fault_t uck_fault(struct vm_fault *vmf)
 	mutex_lock(&region->lock);
 	entry->page = page;
 	if (is_write) {
-		entry->state = UCK_PAGE_EXCLUSIVE;
+		atomic_set(&entry->state, UCK_PAGE_EXCLUSIVE);
 		entry->write_mapped = true;
 	} else {
-		entry->state = UCK_PAGE_SHARED;
+		atomic_set(&entry->state, UCK_PAGE_SHARED);
 		entry->write_mapped = false;
 	}
 	get_page(page);
+	uck_memctl_account_alloc(1);
+	wake_up_all(&entry->waitq);
 	mutex_unlock(&region->lock);
 
 	vmf->page = page;
@@ -236,9 +274,9 @@ static vm_fault_t uck_page_mkwrite(struct vm_fault *vmf)
 
 	mutex_lock(&region->lock);
 	entry = uck_page_lookup(region, page_index);
-	if (entry && entry->state == UCK_PAGE_SHARED) {
+	if (entry && uck_page_get_state(entry) == UCK_PAGE_SHARED) {
 		uck_invalidate_remote_copies(region, page_index);
-		entry->state = UCK_PAGE_EXCLUSIVE;
+		atomic_set(&entry->state, UCK_PAGE_EXCLUSIVE);
 		entry->write_mapped = true;
 	}
 	mutex_unlock(&region->lock);
@@ -292,7 +330,7 @@ static int uck_mmap(struct file *filp, struct vm_area_struct *vma)
 	}
 
 	/* Don't pre-populate - let faults handle it */
-	uck_vm_flags_set(vma, VM_DONTEXPAND | VM_DONTDUMP);
+	uck_vm_flags_set(vma, VM_DONTEXPAND | VM_DONTDUMP | VM_DONTCOPY | VM_IO);
 	vma->vm_ops = &uck_vm_ops;
 	vma->vm_private_data = region;
 
@@ -303,6 +341,11 @@ static int uck_mmap(struct file *filp, struct vm_area_struct *vma)
 static long uck_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	int ret = 0;
+
+	if (!uck_ratelimit_check_ioctl()) {
+		pr_warn_ratelimited("uck: ioctl rate limit exceeded\n");
+		return -EBUSY;
+	}
 
 	switch (cmd) {
 	case UCK_IOC_SET_NODE: {
@@ -529,6 +572,12 @@ static int __init uck_init(void)
 	/* Initialize RDMA transport (falls back to TCP if unavailable) */
 	uck_rdma_init();
 
+	/* Security hardening subsystems */
+	uck_audit_init();
+	uck_ratelimit_init();
+	uck_quorum_init();
+	uck_memctl_init();
+
 	return 0;
 
 err_device:
@@ -542,6 +591,10 @@ err_cdev:
 
 static void __exit uck_exit(void)
 {
+	uck_memctl_exit();
+	uck_quorum_exit();
+	uck_ratelimit_exit();
+	uck_audit_exit();
 	uck_rdma_exit();
 	uck_cgroup_exit();
 	uck_futex_exit();

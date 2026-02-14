@@ -15,6 +15,7 @@
 #include <linux/kthread.h>
 #include <linux/delay.h>
 #include <linux/umh.h>
+#include <linux/cred.h>
 
 #include "uck_internal.h"
 
@@ -75,15 +76,35 @@ struct uck_local_exec_ctx {
 	int slot;
 	char command[512];
 	u32 src_node;       /* Node that submitted the job */
+	kuid_t uid;
+	kgid_t gid;
 };
 
 static int uck_local_exec_thread(void *data)
 {
 	struct uck_local_exec_ctx *ctx = data;
+	char uid_str[16], gid_str[16];
 	char *argv[] = { "/bin/sh", "-c", ctx->command, NULL };
 	char *envp[] = { "HOME=/", "PATH=/sbin:/usr/sbin:/bin:/usr/bin",
 			 "TERM=linux", NULL };
 	int ret;
+
+	/* If non-root UID specified, use su to drop privileges */
+	if (__kuid_val(ctx->uid) != 0) {
+		snprintf(uid_str, sizeof(uid_str), "%u",
+			 __kuid_val(ctx->uid));
+		snprintf(gid_str, sizeof(gid_str), "%u",
+			 __kgid_val(ctx->gid));
+		/* Wrap command with runuser for privilege drop */
+		{
+			char wrapped_cmd[600];
+			snprintf(wrapped_cmd, sizeof(wrapped_cmd),
+				 "runuser -u '#%s' -g '#%s' -- sh -c '%s'",
+				 uid_str, gid_str, ctx->command);
+			strscpy(ctx->command, wrapped_cmd,
+				sizeof(ctx->command));
+		}
+	}
 
 	pr_info("uck: exec job %u: running '%s'\n", ctx->job_id, ctx->command);
 
@@ -139,6 +160,8 @@ static int uck_exec_local(int slot, u32 job_id, const char *command,
 	ctx->job_id = job_id;
 	ctx->slot = slot;
 	ctx->src_node = src_node;
+	ctx->uid = current_uid();
+	ctx->gid = current_gid();
 	strscpy(ctx->command, command, sizeof(ctx->command));
 
 	kthread_run(uck_local_exec_thread, ctx, "uck_job_%u", job_id);
@@ -185,6 +208,8 @@ int uck_submit_remote_exec(struct uck_remote_exec_req *req)
 
 	pr_info("uck: submitting job %u '%s' to node %u\n",
 		job_id, req->command, dest_node);
+	uck_audit_log("exec", "submit job %u to node %u: %s",
+		      job_id, dest_node, req->command);
 
 	/* Store the job_id back into dest_node field for userspace to read */
 	req->dest_node = job_id;
@@ -303,6 +328,8 @@ void uck_handle_exec_req(struct socket *client, struct uck_msg_hdr *hdr)
 
 	/* Execute locally, result will be sent back by the exec thread */
 	uck_exec_local(slot, wire.job_id, wire.command, wire.src_node);
+	uck_audit_log("exec", "remote exec job %u from node %u: %s",
+		      wire.job_id, wire.src_node, wire.command);
 }
 
 /* Handle UCK_MSG_EXEC_STARTED from remote (ack that job started) */

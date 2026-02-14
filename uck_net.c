@@ -17,6 +17,7 @@
 #include <linux/slab.h>
 #include <linux/mm.h>
 #include <linux/highmem.h>
+#include <linux/delay.h>
 #include <net/sock.h>
 #include <linux/sockptr.h>
 
@@ -182,6 +183,23 @@ static int uck_handle_client(void *data)
 		if (ret <= 0)
 			break;
 
+		/* Rate limit check per-node */
+		if (!uck_ratelimit_check_net(hdr.src_node)) {
+			pr_warn_ratelimited("uck: rate limit exceeded for node %u\n",
+					    hdr.src_node);
+			atomic_long_inc(&uck_state.err_ratelimit);
+			return 0;
+		}
+
+		/* Validate cluster epoch to reject stale messages */
+		if (hdr.epoch != 0 && hdr.epoch < uck_state.cluster_epoch) {
+			pr_warn_ratelimited("uck: stale epoch %u from node %u "
+					    "(current %u)\n",
+					    hdr.epoch, hdr.src_node,
+					    uck_state.cluster_epoch);
+			continue;
+		}
+
 		switch (hdr.type) {
 		case UCK_MSG_PAGE_REQ:
 			uck_handle_page_request(client, &hdr);
@@ -221,6 +239,12 @@ static int uck_handle_client(void *data)
 			break;
 		case UCK_MSG_FUTEX_WAKE:
 			uck_handle_futex_wake(client, &hdr);
+			break;
+		case UCK_MSG_FUTEX_WAKE_NACK:
+			/* Remote node could not complete wake — waiter orphaned */
+			pr_warn("uck: futex wake NACK from node %u for addr 0x%lx\n",
+				hdr.src_node, (unsigned long)0UL);
+			atomic_long_inc(&uck_state.err_futex);
 			break;
 		case UCK_MSG_CGROUP_STATS:
 			uck_handle_cgroup_stats(client, &hdr);
@@ -432,8 +456,38 @@ int uck_net_fetch_page(struct uck_region *region, pgoff_t page_index,
 		return ret;
 	}
 
-	/* Receive response header */
-	ret = uck_sock_recv(owner->sock, &resp, sizeof(resp));
+	/* Receive response header + page data with retry logic */
+	{
+		int retries = 3;
+		int backoff_ms = 100;
+
+		while (retries-- > 0) {
+			/* Set receive timeout */
+			{
+				struct __kernel_old_timeval tv;
+				tv.tv_sec = 5;
+				tv.tv_usec = 0;
+				sock_setsockopt(owner->sock, SOL_SOCKET,
+						SO_RCVTIMEO_OLD,
+						KERNEL_SOCKPTR((char *)&tv),
+						sizeof(tv));
+			}
+
+			ret = uck_sock_recv(owner->sock, &resp, sizeof(resp));
+			if (ret >= 0)
+				break;
+			if (ret == -EAGAIN || ret == -ETIMEDOUT) {
+				pr_warn("uck: page fetch timeout, retry %d "
+					"(backoff %dms)\n",
+					3 - retries, backoff_ms);
+				msleep(backoff_ms);
+				backoff_ms *= 2;
+				continue;
+			}
+			/* Other errors: don't retry */
+			break;
+		}
+	}
 	if (ret < 0) {
 		pr_err("uck: recv page resp hdr failed: %d\n", ret);
 		return ret;

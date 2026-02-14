@@ -12,6 +12,7 @@
 #include <linux/sched/signal.h>
 #include <linux/sched/task.h>
 #include <linux/cred.h>
+#include <linux/limits.h>
 
 #include "uck_internal.h"
 
@@ -25,15 +26,55 @@
 static struct uck_remote_node *uck_find_least_loaded(void)
 {
 	struct uck_remote_node *best = NULL;
-	u32 best_load = UINT_MAX;
+	int best_score = INT_MAX;
 	int i;
 
 	for (i = 0; i < uck_state.num_nodes; i++) {
 		struct uck_remote_node *node = &uck_state.nodes[i];
+		int score;
+
 		if (!node->alive)
 			continue;
-		if (node->stats.load_avg < best_load) {
-			best_load = node->stats.load_avg;
+
+		/* Multi-factor load scoring:
+		 *   CPU load:       40% weight
+		 *   Memory pressure: 30% weight
+		 *   I/O wait:        20% weight
+		 *   Task count:      10% weight
+		 * Lower score = better target */
+		{
+			int cpu_score = node->stats.load_avg;  /* 0-100 */
+			int mem_score = 0;
+			int io_score = 0;
+			int task_score = 0;
+			int total;
+
+			/* Memory pressure: ratio of used to total */
+			if (node->stats.total_mem > 0)
+				mem_score = (int)((node->stats.total_mem -
+						   node->stats.free_mem) * 100 /
+						  node->stats.total_mem);
+
+			/* I/O wait percentage (if available in stats) */
+			io_score = 0;  /* Placeholder until stats extended */
+
+			/* Task density */
+			if (node->stats.nr_cpus > 0)
+				task_score = node->stats.nr_running * 100 /
+					     (node->stats.nr_cpus * 4);
+			if (task_score > 100)
+				task_score = 100;
+
+			total = cpu_score * 40 / 100 +
+				mem_score * 30 / 100 +
+				io_score * 20 / 100 +
+				task_score * 10 / 100;
+
+			score = total;
+		}
+
+		if (score < best_score) {
+			best_score = score;
 			best = node;
 		}
 	}

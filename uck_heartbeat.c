@@ -13,8 +13,46 @@
 #include <linux/cpumask.h>
 #include <linux/sched/loadavg.h>
 #include <linux/sched/stat.h>
+#include <linux/crypto.h>
+#include <crypto/hash.h>
 
 #include "uck_internal.h"
+
+/* Cluster-wide shared secret for heartbeat HMAC (set via module param) */
+static char uck_cluster_secret[64] = "uck-default-secret-change-me";
+module_param_string(cluster_secret, uck_cluster_secret,
+		    sizeof(uck_cluster_secret), 0600);
+MODULE_PARM_DESC(cluster_secret, "Shared secret for heartbeat HMAC");
+
+static void uck_compute_hmac(const void *data, size_t len, u8 *out_hmac)
+{
+	struct crypto_shash *tfm;
+	struct shash_desc *desc;
+	size_t desc_size;
+
+	tfm = crypto_alloc_shash("hmac(sha256)", 0, 0);
+	if (IS_ERR(tfm)) {
+		memset(out_hmac, 0, 32);
+		return;
+	}
+
+	crypto_shash_setkey(tfm, uck_cluster_secret,
+			    strlen(uck_cluster_secret));
+
+	desc_size = sizeof(*desc) + crypto_shash_descsize(tfm);
+	desc = kzalloc(desc_size, GFP_KERNEL);
+	if (!desc) {
+		crypto_free_shash(tfm);
+		memset(out_hmac, 0, 32);
+		return;
+	}
+
+	desc->tfm = tfm;
+	crypto_shash_digest(desc, data, len, out_hmac);
+
+	kfree(desc);
+	crypto_free_shash(tfm);
+}
 
 void uck_update_local_stats(void)
 {
@@ -51,6 +89,8 @@ static int uck_send_heartbeat_to(struct uck_remote_node *node)
 	hdr.payload_len = sizeof(stats);
 
 	stats = uck_state.local_stats;
+	uck_compute_hmac(&stats, offsetof(struct uck_node_stats, hmac),
+			 stats.hmac);
 
 	mutex_lock(&node->sock_lock);
 	ret = uck_net_send_msg(node->sock, &hdr, &stats, sizeof(stats));
@@ -67,6 +107,7 @@ static int uck_heartbeat_thread(void *data)
 
 	while (!kthread_should_stop() && uck_state.net_running) {
 		uck_update_local_stats();
+		uck_quorum_check();
 		uck_cgroup_update_local();
 
 		for (i = 0; i < uck_state.num_nodes; i++) {
@@ -86,14 +127,35 @@ static int uck_heartbeat_thread(void *data)
 							 sizeof(uck_state.local_cgroup_stats));
 			}
 
-			/* Check if remote node timed out */
+			/* Adaptive heartbeat failure detection */
 			if (node->alive &&
 			    time_after(jiffies,
 				       node->last_heartbeat +
-				       msecs_to_jiffies(UCK_HEARTBEAT_TIMEOUT_MS))) {
-				pr_warn("uck: node %u heartbeat timeout\n",
-					node->info.node_id);
-				node->alive = false;
+				       msecs_to_jiffies(UCK_HEARTBEAT_INTERVAL_MS))) {
+				node->missed_heartbeats++;
+				if (node->missed_heartbeats == 1) {
+					/* First miss: mark suspect */
+					node->suspect = true;
+					pr_info("uck: node %u suspect "
+						"(1 missed heartbeat)\n",
+						node->info.node_id);
+				} else if (node->missed_heartbeats >= 3) {
+					/* Three consecutive: mark dead */
+					pr_warn("uck: node %u declared dead "
+						"(%u missed heartbeats)\n",
+						node->info.node_id,
+						node->missed_heartbeats);
+					node->alive = false;
+					node->suspect = false;
+					uck_state.cluster_epoch++;
+					pr_info("uck: cluster epoch incremented to %u after node failure\n",
+						uck_state.cluster_epoch);
+					uck_audit_log("node_failure",
+						      "node %u declared dead "
+						      "after %u missed heartbeats",
+						      node->info.node_id,
+						      node->missed_heartbeats);
+				}
 			}
 		}
 
@@ -117,11 +179,31 @@ void uck_handle_heartbeat(struct socket *client, struct uck_msg_hdr *hdr)
 	if (ret < 0)
 		return;
 
+	/* Verify HMAC */
+	{
+		u8 expected_hmac[32];
+		uck_compute_hmac(&stats,
+				 offsetof(struct uck_node_stats, hmac),
+				 expected_hmac);
+		if (memcmp(stats.hmac, expected_hmac, 32) != 0) {
+			pr_warn_ratelimited("uck: heartbeat HMAC mismatch "
+					    "from node %u — dropped\n",
+					    stats.node_id);
+			atomic_long_inc(&uck_state.err_auth);
+			uck_audit_log("auth",
+				      "heartbeat HMAC mismatch from node %u",
+				      stats.node_id);
+			return;
+		}
+	}
+
 	for (i = 0; i < uck_state.num_nodes; i++) {
 		if (uck_state.nodes[i].info.node_id == stats.node_id) {
 			uck_state.nodes[i].stats = stats;
 			uck_state.nodes[i].last_heartbeat = jiffies;
 			uck_state.nodes[i].alive = true;
+			uck_state.nodes[i].missed_heartbeats = 0;
+			uck_state.nodes[i].suspect = false;
 			break;
 		}
 	}

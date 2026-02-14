@@ -46,6 +46,19 @@ void uck_handle_node_announce(struct socket *client, struct uck_msg_hdr *hdr)
 
 	new_info = ann.info;
 
+	/* Epoch validation: returning nodes must have current epoch */
+	if (ann.epoch != 0 && ann.epoch < uck_state.cluster_epoch) {
+		pr_warn("uck: rejecting stale node %u with epoch %u "
+			"(current epoch %u)\n",
+			new_info.node_id, ann.epoch,
+			uck_state.cluster_epoch);
+		uck_audit_log("node_join",
+			      "rejected stale node %u epoch %u (current %u)",
+			      new_info.node_id, ann.epoch,
+			      uck_state.cluster_epoch);
+		return;
+	}
+
 	/* Check if we already know this node */
 	mutex_lock(&uck_state.lock);
 	for (i = 0; i < uck_state.num_nodes; i++) {
@@ -107,6 +120,9 @@ void uck_handle_node_announce(struct socket *client, struct uck_msg_hdr *hdr)
 						 &ann, sizeof(ann));
 		}
 	}
+
+	uck_audit_log("node_join", "node %u joined at 0x%08x:%u",
+		      new_info.node_id, new_info.ip_addr, new_info.port);
 }
 
 /*
@@ -155,6 +171,10 @@ void uck_handle_node_leave(struct socket *client, struct uck_msg_hdr *hdr)
 		mutex_unlock(&region->lock);
 	}
 	mutex_unlock(&uck_state.lock);
+
+	uck_state.cluster_epoch++;
+	uck_audit_log("node_leave", "node %u left, epoch now %u",
+		      leaving_node, uck_state.cluster_epoch);
 
 	/* Send ACK */
 	memset(&ack, 0, sizeof(ack));

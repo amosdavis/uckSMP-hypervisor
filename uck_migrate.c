@@ -27,6 +27,7 @@
 #include <linux/kthread.h>
 #include <linux/uaccess.h>
 #include <linux/umh.h>
+#include <linux/crc32.h>
 
 #include "uck_internal.h"
 
@@ -83,7 +84,7 @@ static int uck_write_state_file(struct uck_incoming_proc *inc)
 	int i;
 	ssize_t ret;
 
-	f = filp_open("/tmp/uck_migrate_state", O_WRONLY | O_CREAT | O_TRUNC,
+	f = filp_open("/run/uck/uck_migrate_state", O_WRONLY | O_CREAT | O_TRUNC,
 		       0600);
 	if (IS_ERR(f))
 		return PTR_ERR(f);
@@ -124,7 +125,7 @@ out:
 
 /*
  * Launch the restore stub process.
- * The stub reads /tmp/uck_migrate_state and restores the process.
+ * The stub reads /run/uck/uck_migrate_state and restores the process.
  */
 static int uck_launch_restored_process(struct uck_incoming_proc *inc)
 {
@@ -193,6 +194,9 @@ void uck_handle_proc_state(struct socket *client, struct uck_msg_hdr *hdr)
 		}
 	}
 
+	uck_audit_log("migration", "received migration for pid %d from node %u",
+		      hdr->orig_pid, hdr->src_node);
+
 	pr_info("uck: receiving process pid=%u from node %u "
 		"(%llu VMAs, %u FDs)\n",
 		inc->hdr.pid, inc->hdr.src_node,
@@ -239,8 +243,28 @@ void uck_handle_proc_state(struct socket *client, struct uck_msg_hdr *hdr)
 		}
 	}
 
+	/* Verify CRC32 integrity of received state */
+	if (hdr->crc32 != 0) {
+		u32 computed_crc = crc32(0, (const u8 *)&hdr,
+					 offsetof(struct uck_proc_state_hdr,
+						  crc32));
+		if (computed_crc != hdr->crc32) {
+			pr_err("uck: migration CRC32 mismatch for pid %d "
+			       "(expected 0x%08x, got 0x%08x)\n",
+			       hdr->orig_pid, hdr->crc32, computed_crc);
+			uck_audit_log("migration",
+				      "CRC32 mismatch for pid %d — aborting",
+				      hdr->orig_pid);
+			atomic_long_inc(&uck_state.err_migrate);
+			return;
+		}
+	}
+
 	/* Restore the process */
 	uck_launch_restored_process(inc);
+
+	uck_audit_log("migration", "pid %d migration from node %u complete",
+		      hdr->orig_pid, hdr->src_node);
 
 	uck_free_incoming(inc);
 }

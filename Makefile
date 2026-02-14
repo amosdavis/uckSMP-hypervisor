@@ -16,7 +16,7 @@ KDIR ?= /lib/modules/$(shell uname -r)/build
 PWD := $(shell pwd)
 CC ?= gcc
 
-.PHONY: all clean install tools
+.PHONY: all clean install tools test
 
 all: tools
 	$(MAKE) -C $(KDIR) M=$(PWD) modules
@@ -40,6 +40,9 @@ uck_run: uck_run.c uck.h
 
 uck_smp: uck_smp.c uck.h
 	$(CC) -Wall -O2 -o uck_smp uck_smp.c
+
+test:
+	$(MAKE) -C tests test
 
 clean:
 	$(MAKE) -C $(KDIR) M=$(PWD) clean
