@@ -292,7 +292,7 @@ static int uck_mmap(struct file *filp, struct vm_area_struct *vma)
 	}
 
 	/* Don't pre-populate - let faults handle it */
-	vma->vm_flags |= VM_DONTEXPAND | VM_DONTDUMP;
+	uck_vm_flags_set(vma, VM_DONTEXPAND | VM_DONTDUMP);
 	vma->vm_ops = &uck_vm_ops;
 	vma->vm_private_data = region;
 

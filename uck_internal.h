@@ -15,7 +15,12 @@
 
 #include "uck.h"
 
-/* class_create() changed signature in kernel 6.4 */
+/* vm_flags_set() added in kernel 6.3 */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0)
+#define uck_vm_flags_set(vma, flags) vm_flags_set(vma, flags)
+#else
+#define uck_vm_flags_set(vma, flags) ((vma)->vm_flags |= (flags))
+#endif
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0)
 #define uck_class_create(name) class_create(name)
 #else

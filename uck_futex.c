@@ -13,6 +13,7 @@
 #include <linux/wait.h>
 #include <linux/sched.h>
 #include <linux/hashtable.h>
+#include <linux/highmem.h>
 
 #include "uck_internal.h"
 
