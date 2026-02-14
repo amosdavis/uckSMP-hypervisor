@@ -127,32 +127,378 @@ jobs:
 
       - name: Create index page
         run: |
-          cat > apt-repo/index.html <<-'HTMLEOF'
+          cat > apt-repo/index.html <<'HTMLEOF'
           <!DOCTYPE html>
-          <html>
-          <head><title>UCK SMP Hypervisor APT Repository</title></head>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>UCK SMP Hypervisor — Debian Repository</title>
+            <style>
+              :root {
+                --debian-red: #d70a53;
+                --debian-dark: #333;
+                --bg: #f9f9f9;
+                --card-bg: #fff;
+                --border: #ddd;
+                --code-bg: #2b2b2b;
+                --code-fg: #f8f8f2;
+                --link: #0066cc;
+                --accent: #c9302c;
+                --mono: 'SFMono-Regular', 'Menlo', 'Consolas', 'Liberation Mono', monospace;
+              }
+              * { margin: 0; padding: 0; box-sizing: border-box; }
+              body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+                color: var(--debian-dark);
+                background: var(--bg);
+                line-height: 1.6;
+              }
+              header {
+                background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+                color: #fff;
+                padding: 2rem 0;
+                border-bottom: 4px solid var(--debian-red);
+              }
+              header .container {
+                display: flex;
+                align-items: center;
+                gap: 1.5rem;
+              }
+              header .logo {
+                width: 64px;
+                height: 64px;
+                background: rgba(255,255,255,0.1);
+                border-radius: 12px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 2rem;
+                flex-shrink: 0;
+              }
+              header h1 {
+                font-size: 1.6rem;
+                font-weight: 600;
+                letter-spacing: -0.02em;
+              }
+              header p {
+                color: rgba(255,255,255,0.75);
+                font-size: 0.95rem;
+                margin-top: 0.25rem;
+              }
+              .container {
+                max-width: 860px;
+                margin: 0 auto;
+                padding: 0 1.5rem;
+              }
+              main {
+                padding: 2rem 0 3rem;
+              }
+              .notice {
+                background: #fff3cd;
+                border: 1px solid #ffc107;
+                border-left: 4px solid #ffc107;
+                border-radius: 4px;
+                padding: 0.75rem 1rem;
+                margin-bottom: 2rem;
+                font-size: 0.9rem;
+              }
+              .notice strong { color: #856404; }
+              section {
+                background: var(--card-bg);
+                border: 1px solid var(--border);
+                border-radius: 6px;
+                margin-bottom: 1.5rem;
+                overflow: hidden;
+              }
+              section h2 {
+                font-size: 1rem;
+                font-weight: 600;
+                padding: 0.75rem 1.25rem;
+                background: #f5f5f5;
+                border-bottom: 1px solid var(--border);
+                text-transform: uppercase;
+                letter-spacing: 0.04em;
+                color: #555;
+              }
+              section .content {
+                padding: 1.25rem;
+              }
+              .steps {
+                counter-reset: step;
+                list-style: none;
+                padding: 0;
+              }
+              .steps li {
+                position: relative;
+                padding: 0 0 1.5rem 2.5rem;
+              }
+              .steps li:last-child { padding-bottom: 0; }
+              .steps li::before {
+                counter-increment: step;
+                content: counter(step);
+                position: absolute;
+                left: 0;
+                top: 0;
+                width: 1.75rem;
+                height: 1.75rem;
+                background: var(--debian-red);
+                color: #fff;
+                border-radius: 50%;
+                font-size: 0.8rem;
+                font-weight: 700;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+              }
+              .steps li .step-title {
+                font-weight: 600;
+                margin-bottom: 0.4rem;
+              }
+              pre {
+                background: var(--code-bg);
+                color: var(--code-fg);
+                padding: 1rem 1.25rem;
+                border-radius: 4px;
+                overflow-x: auto;
+                font-family: var(--mono);
+                font-size: 0.85rem;
+                line-height: 1.7;
+                margin-top: 0.4rem;
+              }
+              pre .comment { color: #75715e; }
+              pre .cmd { color: #a6e22e; }
+              code {
+                font-family: var(--mono);
+                font-size: 0.88em;
+                background: #f0f0f0;
+                padding: 0.15em 0.4em;
+                border-radius: 3px;
+              }
+              pre code {
+                background: none;
+                padding: 0;
+              }
+              .pkg-grid {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 1rem;
+              }
+              @media (max-width: 600px) {
+                .pkg-grid { grid-template-columns: 1fr; }
+              }
+              .pkg-card {
+                border: 1px solid var(--border);
+                border-radius: 6px;
+                padding: 1rem 1.25rem;
+              }
+              .pkg-card h3 {
+                font-family: var(--mono);
+                font-size: 0.95rem;
+                color: var(--debian-red);
+                margin-bottom: 0.25rem;
+              }
+              .pkg-card .arch {
+                font-size: 0.75rem;
+                color: #888;
+                text-transform: uppercase;
+                letter-spacing: 0.05em;
+                margin-bottom: 0.5rem;
+              }
+              .pkg-card p {
+                font-size: 0.88rem;
+                color: #555;
+              }
+              .pkg-card ul {
+                margin: 0.5rem 0 0;
+                padding-left: 1.25rem;
+                font-size: 0.85rem;
+                color: #555;
+              }
+              .pkg-card ul li { margin-bottom: 0.15rem; }
+              table {
+                width: 100%;
+                border-collapse: collapse;
+                font-size: 0.9rem;
+              }
+              table th {
+                text-align: left;
+                padding: 0.5rem 0.75rem;
+                border-bottom: 2px solid var(--border);
+                color: #555;
+                font-weight: 600;
+              }
+              table td {
+                padding: 0.5rem 0.75rem;
+                border-bottom: 1px solid #eee;
+              }
+              table td code {
+                font-size: 0.85em;
+              }
+              a { color: var(--link); text-decoration: none; }
+              a:hover { text-decoration: underline; }
+              footer {
+                border-top: 1px solid var(--border);
+                padding: 1.5rem 0;
+                text-align: center;
+                font-size: 0.82rem;
+                color: #999;
+              }
+              footer a { color: #777; }
+              .badge {
+                display: inline-block;
+                font-size: 0.7rem;
+                font-weight: 600;
+                padding: 0.15em 0.5em;
+                border-radius: 3px;
+                text-transform: uppercase;
+                letter-spacing: 0.03em;
+                vertical-align: middle;
+              }
+              .badge-dkms { background: #e3f2fd; color: #1565c0; }
+              .badge-bin { background: #e8f5e9; color: #2e7d32; }
+              .file-list {
+                list-style: none;
+                padding: 0;
+                font-family: var(--mono);
+                font-size: 0.85rem;
+              }
+              .file-list li {
+                padding: 0.35rem 0;
+                border-bottom: 1px solid #f0f0f0;
+              }
+              .file-list li:last-child { border-bottom: none; }
+              .file-list a { display: flex; align-items: center; gap: 0.5rem; }
+              .file-list .icon { color: #888; }
+            </style>
+          </head>
           <body>
-          <h1>UCK SMP Hypervisor APT Repository</h1>
-          <h2>Installation</h2>
-          <pre><code># Add the GPG key
-          curl -fsSL https://amosdavis.github.io/uckSMP-hypervisor/gpg.key \
-            | sudo gpg --dearmor -o /usr/share/keyrings/ucksmp.gpg
+            <header>
+              <div class="container">
+                <div class="logo">⚙</div>
+                <div>
+                  <h1>UCK SMP Hypervisor</h1>
+                  <p>Debian APT Repository &mdash; Kernel module &amp; userspace tools</p>
+                </div>
+              </div>
+            </header>
 
-          # Add the repository
-          echo "deb [signed-by=/usr/share/keyrings/ucksmp.gpg] \
+            <main class="container">
+              <section>
+                <h2>Quick Install</h2>
+                <div class="content">
+                  <ol class="steps">
+                    <li>
+                      <div class="step-title">Import the repository signing key</div>
+                      <pre><code><span class="cmd">curl</span> -fsSL https://amosdavis.github.io/uckSMP-hypervisor/gpg.key \
+            | <span class="cmd">sudo</span> gpg --dearmor -o /usr/share/keyrings/ucksmp.gpg</code></pre>
+                    </li>
+                    <li>
+                      <div class="step-title">Add the APT source</div>
+                      <pre><code><span class="cmd">echo</span> "deb [signed-by=/usr/share/keyrings/ucksmp.gpg] \
             https://amosdavis.github.io/uckSMP-hypervisor stable main" \
-            | sudo tee /etc/apt/sources.list.d/ucksmp.list
+            | <span class="cmd">sudo</span> tee /etc/apt/sources.list.d/ucksmp.list</code></pre>
+                    </li>
+                    <li>
+                      <div class="step-title">Update &amp; install</div>
+                      <pre><code><span class="cmd">sudo</span> apt update
+          <span class="cmd">sudo</span> apt install ucksmp-dkms ucksmp-tools</code></pre>
+                    </li>
+                  </ol>
+                </div>
+              </section>
 
-          # Install
-          sudo apt update
-          sudo apt install ucksmp-dkms ucksmp-tools
-          </code></pre>
-          <h2>Packages</h2>
-          <ul>
-          <li><strong>ucksmp-dkms</strong> — Kernel module (auto-builds via DKMS)</li>
-          <li><strong>ucksmp-tools</strong> — Userspace tools (uckd, uckctl, uck_smp, etc.)</li>
-          </ul>
-          <p><a href="https://github.com/amosdavis/uckSMP-hypervisor">GitHub Repository</a></p>
+              <section>
+                <h2>Available Packages</h2>
+                <div class="content">
+                  <div class="pkg-grid">
+                    <div class="pkg-card">
+                      <h3>ucksmp-dkms</h3>
+                      <div class="arch"><span class="badge badge-dkms">DKMS</span> Architecture: all</div>
+                      <p>Kernel module source package. Automatically builds
+                         <code>uck.ko</code> for your running kernel via DKMS.</p>
+                      <ul>
+                        <li>Shared memory regions</li>
+                        <li>Distributed futex</li>
+                        <li>Process checkpoint/restore</li>
+                        <li>Network transport &amp; heartbeat</li>
+                      </ul>
+                    </div>
+                    <div class="pkg-card">
+                      <h3>ucksmp-tools</h3>
+                      <div class="arch"><span class="badge badge-bin">Binary</span> Architecture: amd64</div>
+                      <p>Userspace tools for managing the UCK SMP cluster.</p>
+                      <ul>
+                        <li><code>uckd</code> &mdash; cluster daemon</li>
+                        <li><code>uckctl</code> &mdash; admin CLI</li>
+                        <li><code>uck_smp</code> &mdash; SMP orchestrator</li>
+                        <li><code>uck_run</code> &mdash; job launcher</li>
+                        <li><code>uck_test</code> &mdash; self-test suite</li>
+                        <li><code>uck_restore</code> &mdash; checkpoint restore</li>
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section>
+                <h2>Repository Details</h2>
+                <div class="content">
+                  <table>
+                    <tr>
+                      <th>Property</th>
+                      <th>Value</th>
+                    </tr>
+                    <tr>
+                      <td>Origin</td>
+                      <td>UCK SMP Hypervisor</td>
+                    </tr>
+                    <tr>
+                      <td>Suite / Codename</td>
+                      <td><code>stable</code></td>
+                    </tr>
+                    <tr>
+                      <td>Component</td>
+                      <td><code>main</code></td>
+                    </tr>
+                    <tr>
+                      <td>Architectures</td>
+                      <td><code>amd64</code>, <code>all</code></td>
+                    </tr>
+                    <tr>
+                      <td>Signing Key</td>
+                      <td><a href="gpg.key">Download GPG public key</a></td>
+                    </tr>
+                    <tr>
+                      <td>Supported Kernels</td>
+                      <td>6.1+ (Bookworm, Trixie, Sid)</td>
+                    </tr>
+                  </table>
+                </div>
+              </section>
+
+              <section>
+                <h2>Repository Files</h2>
+                <div class="content">
+                  <ul class="file-list">
+                    <li><a href="gpg.key"><span class="icon">🔑</span> gpg.key</a></li>
+                    <li><a href="dists/stable/Release"><span class="icon">📄</span> dists/stable/Release</a></li>
+                    <li><a href="dists/stable/Release.gpg"><span class="icon">📄</span> dists/stable/Release.gpg</a></li>
+                    <li><a href="dists/stable/InRelease"><span class="icon">📄</span> dists/stable/InRelease</a></li>
+                    <li><a href="dists/stable/main/binary-amd64/Packages"><span class="icon">📦</span> dists/stable/main/binary-amd64/Packages</a></li>
+                    <li><a href="pool/main/"><span class="icon">📁</span> pool/main/</a></li>
+                  </ul>
+                </div>
+              </section>
+            </main>
+
+            <footer>
+              <div class="container">
+                <a href="https://github.com/amosdavis/uckSMP-hypervisor">GitHub</a> &middot;
+                Licensed under GPL-2.0 &middot;
+                APT repository served via GitHub Pages
+              </div>
+            </footer>
           </body>
           </html>
           HTMLEOF
