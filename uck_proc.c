@@ -357,8 +357,8 @@ static int uck_send_process(u32 dest_node, struct task_struct *task,
 				void *kaddr;
 				char *page_buf;
 
-				ret = get_user_pages_remote(mm, addr, 1,
-							    0, &page, NULL, NULL);
+				ret = uck_get_user_pages_remote(mm, addr, 1,
+							    0, &page);
 				if (ret != 1)
 					continue;
 

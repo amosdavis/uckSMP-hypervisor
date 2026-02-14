@@ -27,6 +27,15 @@
 #define uck_class_create(name) class_create(THIS_MODULE, name)
 #endif
 
+/* get_user_pages_remote(): vmas parameter removed in kernel 6.5 */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 5, 0)
+#define uck_get_user_pages_remote(mm, addr, nr, flags, pages) \
+	get_user_pages_remote(mm, addr, nr, flags, pages, NULL)
+#else
+#define uck_get_user_pages_remote(mm, addr, nr, flags, pages) \
+	get_user_pages_remote(mm, addr, nr, flags, pages, NULL, NULL)
+#endif
+
 /* Per-page tracking entry */
 struct uck_page_entry {
 	struct rb_node rb_node;
