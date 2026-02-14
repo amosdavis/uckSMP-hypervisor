@@ -178,8 +178,8 @@ static vm_fault_t uck_fault(struct vm_fault *vmf)
 					if (is_write) {
 						uck_invalidate_remote_copies(
 							region, page_index);
-						entry->state =
-							UCK_PAGE_EXCLUSIVE;
+						atomic_set(&entry->state,
+							UCK_PAGE_EXCLUSIVE);
 						entry->write_mapped = true;
 					}
 					mutex_unlock(&region->lock);

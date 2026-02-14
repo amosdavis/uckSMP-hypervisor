@@ -110,7 +110,7 @@ int uck_net_fetch_pages_batch(struct uck_region *region,
 			if (entry->page)
 				__free_page(entry->page);
 			entry->page = page;
-			entry->state = UCK_PAGE_SHARED;
+			atomic_set(&entry->state, UCK_PAGE_SHARED);
 			entry->write_mapped = false;
 			get_page(page);
 		}
@@ -248,7 +248,7 @@ int uck_build_prefetch_list(struct uck_region *region, pgoff_t fault_index,
 			continue;
 
 		entry = uck_page_lookup(region, idx);
-		if (entry && entry->state != UCK_PAGE_INVALID)
+		if (entry && uck_page_get_state(entry) != UCK_PAGE_INVALID)
 			continue;
 
 		out_indices[count++] = idx;

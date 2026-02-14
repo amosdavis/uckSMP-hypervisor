@@ -157,7 +157,7 @@ static void uck_handle_invalidate(struct socket *client,
 				__free_page(entry->page);
 				entry->page = NULL;
 			}
-			entry->state = UCK_PAGE_INVALID;
+			atomic_set(&entry->state, UCK_PAGE_INVALID);
 		}
 		mutex_unlock(&region->lock);
 	}

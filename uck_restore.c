@@ -20,7 +20,9 @@
 #include <signal.h>
 #include <ucontext.h>
 #include <errno.h>
+#include <stddef.h>
 #include <sys/prctl.h>
+#include <sys/syscall.h>
 #include <linux/seccomp.h>
 #include <linux/filter.h>
 

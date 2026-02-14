@@ -166,7 +166,7 @@ void uck_handle_node_leave(struct socket *client, struct uck_msg_hdr *hdr)
 				container_of(n, struct uck_page_entry, rb_node);
 			/* Pages from this owner are now stale */
 			if (entry->owner_node == leaving_node)
-				entry->state = UCK_PAGE_INVALID;
+				atomic_set(&entry->state, UCK_PAGE_INVALID);
 		}
 		mutex_unlock(&region->lock);
 	}
