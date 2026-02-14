@@ -49,10 +49,8 @@ void uck_audit_log(const char *event, const char *fmt, ...)
 		ab = audit_log_start(audit_context(), GFP_ATOMIC,
 				     AUDIT_KERNEL_OTHER);
 		if (ab) {
-			audit_log_format(ab, "uck %s: ", event);
-			va_start(args, fmt);
-			audit_log_vformat(ab, fmt, args);
-			va_end(args);
+			audit_log_format(ab, "uck %s: %s", event,
+					 entry->message);
 			audit_log_end(ab);
 		}
 	}

@@ -157,7 +157,7 @@ static void uck_futex_wake_remote(u64 region_id, u64 offset, u32 nr_wake)
 
 		/* Wait for wake acknowledgment with timeout */
 		{
-			unsigned long timeout_jiffies = msecs_to_jiffies(5000);
+			unsigned long timeout_jiffies __maybe_unused = msecs_to_jiffies(5000);
 			/* If acknowledgment not received within timeout,
 			 * the remote waiter is considered orphaned */
 			/* TODO: implement full ACK tracking with per-waiter state */

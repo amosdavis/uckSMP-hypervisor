@@ -54,7 +54,7 @@ struct uck_tracked_proc {
 };
 
 /* Round-robin node index for distributing forks */
-static atomic_t uck_rr_index = ATOMIC_INIT(0);
+static atomic_t uck_rr_index __maybe_unused = ATOMIC_INIT(0);
 
 static struct uck_tracked_proc *uck_find_tracked(pid_t pid)
 {
