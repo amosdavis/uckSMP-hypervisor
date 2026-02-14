@@ -240,7 +240,7 @@ static int uck_config_show(struct seq_file *m, void *v)
 		   uck_state.quorum_active ? "active" : "degraded");
 	seq_printf(m, "  max_tasks/node:   %u\n",
 		   uck_state.max_tasks_per_node);
-	seq_printf(m, "  max_pages:        %lu\n",
+	seq_printf(m, "  max_pages:        %llu\n",
 		   uck_state.max_pages);
 	return 0;
 }

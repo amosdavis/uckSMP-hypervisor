@@ -463,7 +463,7 @@ int uck_migrate_process(u32 pid, u32 dest_node)
 					      "src=0x%llx dst=0x%llx",
 					      src_features, dst_features);
 				put_task_struct(task);
-				return -ENOTSUP;
+				return -EOPNOTSUPP;
 			}
 		}
 	}
