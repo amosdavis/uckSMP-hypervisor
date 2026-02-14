@@ -23,11 +23,16 @@
 #define UCK_HEARTBEAT_INTERVAL_MS 2000
 #define UCK_HEARTBEAT_TIMEOUT_MS  6000
 
+/* Batch page transfer limits */
+#define UCK_BATCH_MAX_PAGES  32   /* Max pages per batch request */
+#define UCK_PREFETCH_WINDOW   8   /* Adjacent pages to prefetch on fault */
+
 /* Page states in the coherence protocol */
 enum uck_page_state {
 	UCK_PAGE_INVALID = 0,
 	UCK_PAGE_SHARED,
 	UCK_PAGE_MODIFIED,
+	UCK_PAGE_EXCLUSIVE,       /* Writable, sole copy */
 };
 
 /* Node identity */
@@ -123,6 +128,10 @@ enum uck_msg_type {
 	UCK_MSG_NODE_JOIN,
 	UCK_MSG_NODE_JOIN_ACK,
 
+	/* Batch page transfer */
+	UCK_MSG_BATCH_PAGE_REQ = 10,
+	UCK_MSG_BATCH_PAGE_RESP,
+
 	/* Heartbeat */
 	UCK_MSG_HEARTBEAT = 20,
 
@@ -139,6 +148,20 @@ enum uck_msg_type {
 	UCK_MSG_EXEC_REQ = 40,  /* Execute command on remote node */
 	UCK_MSG_EXEC_STARTED,   /* Remote confirms execution started */
 	UCK_MSG_EXEC_DONE,      /* Remote reports completion + exit code */
+
+	/* Node join/leave */
+	UCK_MSG_NODE_ANNOUNCE = 50,
+	UCK_MSG_NODE_ANNOUNCE_ACK,
+	UCK_MSG_NODE_LEAVE,
+	UCK_MSG_NODE_LEAVE_ACK,
+
+	/* Distributed futex */
+	UCK_MSG_FUTEX_WAIT = 60,
+	UCK_MSG_FUTEX_WAKE,
+	UCK_MSG_FUTEX_WAKE_RESP,
+
+	/* cgroup accounting */
+	UCK_MSG_CGROUP_STATS = 70,
 };
 
 /* Remote exec wire payload (sent after msg_hdr with type UCK_MSG_EXEC_REQ) */
@@ -155,6 +178,47 @@ struct uck_exec_result {
 	__s32 exit_code;
 	__u32 pid;
 	__u32 _pad;
+};
+
+/* Batch page request: request multiple pages at once */
+struct uck_batch_page_req {
+	__u64 region_id;
+	__u32 nr_pages;
+	__u32 _pad;
+	__u64 offsets[UCK_BATCH_MAX_PAGES]; /* Page-aligned offsets */
+};
+
+/* Batch page response header: followed by nr_pages * PAGE_SIZE data */
+struct uck_batch_page_resp {
+	__u64 region_id;
+	__u32 nr_pages;
+	__u32 flags;             /* 0 = success */
+};
+
+/* Node announce payload (for dynamic join) */
+struct uck_node_announce {
+	struct uck_node_info info;
+	struct uck_node_stats stats;
+};
+
+/* Futex operation request (cross-node) */
+struct uck_futex_req {
+	__u64 region_id;
+	__u64 offset;            /* Byte offset within region */
+	__u32 op;                /* UCK_FUTEX_WAIT or UCK_FUTEX_WAKE */
+	__u32 val;               /* Expected value (WAIT) or nr to wake (WAKE) */
+};
+
+#define UCK_FUTEX_WAIT  0
+#define UCK_FUTEX_WAKE  1
+
+/* cgroup stats per node (exchanged via UCK_MSG_CGROUP_STATS) */
+struct uck_cgroup_stats {
+	__u32 node_id;
+	__u32 nr_tasks;          /* Tasks in UCK cgroup on this node */
+	__u64 cpu_usage_ns;      /* Total CPU time in nanoseconds */
+	__u64 mem_usage;         /* Memory usage in bytes */
+	__u64 mem_limit;         /* Memory limit in bytes (0 = unlimited) */
 };
 
 /* Wire protocol header */
@@ -231,5 +295,8 @@ struct uck_smp_req {
 #define UCK_IOC_REMOTE_EXEC    _IOWR(UCK_IOC_MAGIC, 8, struct uck_remote_exec_req)
 #define UCK_IOC_GET_JOBS       _IOWR(UCK_IOC_MAGIC, 9, struct uck_job_query)
 #define UCK_IOC_ENABLE_SMP     _IOW(UCK_IOC_MAGIC, 10, struct uck_smp_req)
+#define UCK_IOC_FUTEX          _IOWR(UCK_IOC_MAGIC, 11, struct uck_futex_req)
+#define UCK_IOC_NODE_LEAVE     _IO(UCK_IOC_MAGIC, 12)
+#define UCK_IOC_GET_CGROUP     _IOR(UCK_IOC_MAGIC, 13, struct uck_cgroup_stats)
 
 #endif /* _UCK_H_ */

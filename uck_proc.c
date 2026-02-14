@@ -4,8 +4,8 @@
  * Captures the state of a running process (registers, memory map, fds)
  * and restores it on a remote node.
  *
- * Limitations:
- *   - Single-threaded processes only
+ * Features:
+ *   - Multi-threaded process support (checkpoints all threads)
  *   - File descriptors are reopened by path on destination
  *   - Anonymous pages are transferred inline
  *   - No support for sockets, pipes, or shared memory (yet)
@@ -30,6 +30,15 @@
 #include <asm/ptrace.h>
 
 #include "uck_internal.h"
+
+/* Per-thread register state for multi-threaded migration */
+struct uck_thread_state {
+	__u32 tid;
+	__u64 ip, sp, flags;
+	__u64 ax, bx, cx, dx, si, di, bp;
+	__u64 r8, r9, r10, r11, r12, r13, r14, r15;
+	__u64 cs, ss;
+};
 
 /*
  * Capture register state from a stopped task.
@@ -183,7 +192,7 @@ static int uck_serialize_fds(struct task_struct *task,
 }
 
 /*
- * Full process checkpoint: freeze, capture state, serialize.
+ * Full process checkpoint: freeze, capture state for all threads, serialize.
  */
 static void *uck_checkpoint_process(struct task_struct *task, size_t *out_len)
 {
@@ -191,9 +200,11 @@ static void *uck_checkpoint_process(struct task_struct *task, size_t *out_len)
 	struct uck_proc_state_hdr *hdr;
 	struct uck_vma_desc *vmas;
 	struct uck_fd_desc *fds;
-	int nr_vmas, nr_fds;
+	struct uck_thread_state *threads;
+	int nr_vmas, nr_fds, nr_threads;
 	size_t total_len;
 	char *buf;
+	struct task_struct *t;
 
 	mm = get_task_mm(task);
 	if (!mm)
@@ -202,9 +213,19 @@ static void *uck_checkpoint_process(struct task_struct *task, size_t *out_len)
 	nr_vmas = uck_count_vmas(mm);
 	nr_fds = uck_count_fds(task);
 
+	/* Count threads */
+	nr_threads = 0;
+	rcu_read_lock();
+	for_each_thread(task, t)
+		nr_threads++;
+	rcu_read_unlock();
+	if (nr_threads == 0)
+		nr_threads = 1;
+
 	total_len = sizeof(*hdr) +
 		    nr_vmas * sizeof(struct uck_vma_desc) +
-		    nr_fds * sizeof(struct uck_fd_desc);
+		    nr_fds * sizeof(struct uck_fd_desc) +
+		    nr_threads * sizeof(struct uck_thread_state);
 
 	buf = kvmalloc(total_len, GFP_KERNEL);
 	if (!buf) {
@@ -220,6 +241,7 @@ static void *uck_checkpoint_process(struct task_struct *task, size_t *out_len)
 	hdr->nr_pages = 0;
 	hdr->nr_fds = nr_fds;
 
+	/* Capture leader thread registers into header */
 	uck_capture_regs(task, hdr);
 
 	vmas = (struct uck_vma_desc *)(buf + sizeof(*hdr));
@@ -229,7 +251,47 @@ static void *uck_checkpoint_process(struct task_struct *task, size_t *out_len)
 				      nr_vmas * sizeof(struct uck_vma_desc));
 	uck_serialize_fds(task, fds, nr_fds);
 
+	/* Capture per-thread register state */
+	threads = (struct uck_thread_state *)((char *)fds +
+					       nr_fds * sizeof(struct uck_fd_desc));
+	{
+		int tidx = 0;
+		rcu_read_lock();
+		for_each_thread(task, t) {
+			struct pt_regs *regs;
+			if (tidx >= nr_threads)
+				break;
+			regs = task_pt_regs(t);
+			threads[tidx].tid = t->pid;
+			threads[tidx].ip = regs->ip;
+			threads[tidx].sp = regs->sp;
+			threads[tidx].flags = regs->flags;
+			threads[tidx].ax = regs->ax;
+			threads[tidx].bx = regs->bx;
+			threads[tidx].cx = regs->cx;
+			threads[tidx].dx = regs->dx;
+			threads[tidx].si = regs->si;
+			threads[tidx].di = regs->di;
+			threads[tidx].bp = regs->bp;
+			threads[tidx].r8 = regs->r8;
+			threads[tidx].r9 = regs->r9;
+			threads[tidx].r10 = regs->r10;
+			threads[tidx].r11 = regs->r11;
+			threads[tidx].r12 = regs->r12;
+			threads[tidx].r13 = regs->r13;
+			threads[tidx].r14 = regs->r14;
+			threads[tidx].r15 = regs->r15;
+			threads[tidx].cs = regs->cs;
+			threads[tidx].ss = regs->ss;
+			tidx++;
+		}
+		rcu_read_unlock();
+	}
+
 	mmput(mm);
+
+	pr_info("uck: checkpoint: %d VMAs, %d FDs, %d threads\n",
+		nr_vmas, nr_fds, nr_threads);
 
 	*out_len = total_len;
 	return buf;
@@ -364,23 +426,35 @@ int uck_migrate_process(u32 pid, u32 dest_node)
 	}
 
 	if (task->signal->nr_threads > 1) {
-		pr_err("uck: migrate: pid %u is multi-threaded\n", pid);
-		put_task_struct(task);
-		return -EOPNOTSUPP;
+		pr_info("uck: migrate: pid %u is multi-threaded (%d threads), "
+			"migrating all threads\n",
+			pid, task->signal->nr_threads);
 	}
 
 	pr_info("uck: migrating pid %u (%s) to node %u\n",
 		pid, task->comm, dest_node);
 
-	/* Freeze the process */
-	send_sig(SIGSTOP, task, 1);
+	/* Freeze the process (all threads) */
+	{
+		struct task_struct *t;
+		rcu_read_lock();
+		for_each_thread(task, t)
+			send_sig(SIGSTOP, t, 1);
+		rcu_read_unlock();
+	}
 	msleep(100);
 
 	/* Checkpoint */
 	state_buf = uck_checkpoint_process(task, &state_len);
 	if (!state_buf) {
 		pr_err("uck: migrate: checkpoint failed for pid %u\n", pid);
-		send_sig(SIGCONT, task, 1);
+		{
+			struct task_struct *t;
+			rcu_read_lock();
+			for_each_thread(task, t)
+				send_sig(SIGCONT, t, 1);
+			rcu_read_unlock();
+		}
 		put_task_struct(task);
 		return -ENOMEM;
 	}
@@ -394,13 +468,25 @@ int uck_migrate_process(u32 pid, u32 dest_node)
 
 	if (ret < 0) {
 		pr_err("uck: migrate: send failed: %d\n", ret);
-		send_sig(SIGCONT, task, 1);
+		{
+			struct task_struct *t;
+			rcu_read_lock();
+			for_each_thread(task, t)
+				send_sig(SIGCONT, t, 1);
+			rcu_read_unlock();
+		}
 		put_task_struct(task);
 		return ret;
 	}
 
-	/* Kill the local copy */
-	send_sig(SIGKILL, task, 1);
+	/* Kill all threads of the local copy */
+	{
+		struct task_struct *t;
+		rcu_read_lock();
+		for_each_thread(task, t)
+			send_sig(SIGKILL, t, 1);
+		rcu_read_unlock();
+	}
 	put_task_struct(task);
 
 	pr_info("uck: migration of pid %u to node %u complete\n",

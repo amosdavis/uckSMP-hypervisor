@@ -207,6 +207,24 @@ static int uck_handle_client(void *data)
 		case UCK_MSG_EXEC_DONE:
 			uck_handle_exec_done(client, &hdr);
 			break;
+		case UCK_MSG_BATCH_PAGE_REQ:
+			uck_handle_batch_page_req(client, &hdr);
+			break;
+		case UCK_MSG_NODE_ANNOUNCE:
+			uck_handle_node_announce(client, &hdr);
+			break;
+		case UCK_MSG_NODE_LEAVE:
+			uck_handle_node_leave(client, &hdr);
+			break;
+		case UCK_MSG_FUTEX_WAIT:
+			uck_handle_futex_wait(client, &hdr);
+			break;
+		case UCK_MSG_FUTEX_WAKE:
+			uck_handle_futex_wake(client, &hdr);
+			break;
+		case UCK_MSG_CGROUP_STATS:
+			uck_handle_cgroup_stats(client, &hdr);
+			break;
 		default:
 			pr_warn("uck: unknown message type %u\n", hdr.type);
 			break;
@@ -476,6 +494,31 @@ int uck_net_send_to_node(u32 node_id, void *buf, int len)
 
 		mutex_lock(&node->sock_lock);
 		ret = uck_sock_send(node->sock, buf, len);
+		mutex_unlock(&node->sock_lock);
+		return ret;
+	}
+	return -ENOENT;
+}
+
+/* Send header + payload to a specific node (locked) */
+int uck_net_send_msg_to_node(u32 node_id, struct uck_msg_hdr *hdr,
+			     void *payload, int payload_len)
+{
+	int i, ret;
+
+	for (i = 0; i < uck_state.num_nodes; i++) {
+		struct uck_remote_node *node = &uck_state.nodes[i];
+		if (node->info.node_id != node_id)
+			continue;
+
+		if (!node->connected) {
+			ret = uck_net_connect_node(node);
+			if (ret < 0)
+				return ret;
+		}
+
+		mutex_lock(&node->sock_lock);
+		ret = uck_net_send_msg(node->sock, hdr, payload, payload_len);
 		mutex_unlock(&node->sock_lock);
 		return ret;
 	}

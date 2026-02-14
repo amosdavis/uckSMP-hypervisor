@@ -67,10 +67,24 @@ static int uck_heartbeat_thread(void *data)
 
 	while (!kthread_should_stop() && uck_state.net_running) {
 		uck_update_local_stats();
+		uck_cgroup_update_local();
 
 		for (i = 0; i < uck_state.num_nodes; i++) {
 			struct uck_remote_node *node = &uck_state.nodes[i];
 			uck_send_heartbeat_to(node);
+
+			/* Also send cgroup stats */
+			{
+				struct uck_msg_hdr chdr;
+				memset(&chdr, 0, sizeof(chdr));
+				chdr.type = UCK_MSG_CGROUP_STATS;
+				chdr.src_node = uck_state.local_node.node_id;
+				chdr.payload_len = sizeof(struct uck_cgroup_stats);
+				uck_net_send_msg_to_node(node->info.node_id,
+							 &chdr,
+							 &uck_state.local_cgroup_stats,
+							 sizeof(uck_state.local_cgroup_stats));
+			}
 
 			/* Check if remote node timed out */
 			if (node->alive &&

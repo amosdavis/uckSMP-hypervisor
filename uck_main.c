@@ -35,6 +35,9 @@ struct uck_state uck_state;
 
 /* ---- Page fault handler ---- */
 
+static void uck_invalidate_remote_copies(struct uck_region *region,
+					  pgoff_t page_index);
+
 static vm_fault_t uck_fault(struct vm_fault *vmf)
 {
 	struct vm_area_struct *vma = vmf->vma;
@@ -45,12 +48,14 @@ static vm_fault_t uck_fault(struct vm_fault *vmf)
 	struct page *page;
 	void *kaddr;
 	int ret;
+	bool is_write;
 
 	if (!region)
 		return VM_FAULT_SIGBUS;
 
 	offset = vmf->address - vma->vm_start;
 	page_index = offset >> PAGE_SHIFT;
+	is_write = (vmf->flags & FAULT_FLAG_WRITE) != 0;
 
 	if (offset >= region->info.size) {
 		pr_warn("uck: fault offset %lu >= region size %llu\n",
@@ -58,8 +63,9 @@ static vm_fault_t uck_fault(struct vm_fault *vmf)
 		return VM_FAULT_SIGBUS;
 	}
 
-	pr_info_ratelimited("uck: fault region %llu page %lu\n",
-			    region->info.region_id, page_index);
+	pr_info_ratelimited("uck: fault region %llu page %lu %s\n",
+			    region->info.region_id, page_index,
+			    is_write ? "WRITE" : "READ");
 
 	mutex_lock(&region->lock);
 
@@ -67,7 +73,24 @@ static vm_fault_t uck_fault(struct vm_fault *vmf)
 	entry = uck_page_lookup(region, page_index);
 
 	if (entry && entry->state != UCK_PAGE_INVALID) {
-		/* Page is locally cached */
+		if (is_write && entry->state == UCK_PAGE_SHARED) {
+			/*
+			 * Write fault on a SHARED page: transition to
+			 * EXCLUSIVE state. Must invalidate copies on
+			 * other nodes before allowing the write.
+			 */
+			uck_invalidate_remote_copies(region, page_index);
+			entry->state = UCK_PAGE_EXCLUSIVE;
+			entry->write_mapped = true;
+
+			page = entry->page;
+			get_page(page);
+			mutex_unlock(&region->lock);
+			vmf->page = page;
+			return 0;
+		}
+
+		/* Read fault or already exclusive — serve from cache */
 		page = entry->page;
 		get_page(page);
 		mutex_unlock(&region->lock);
@@ -93,15 +116,56 @@ static vm_fault_t uck_fault(struct vm_fault *vmf)
 
 	mutex_unlock(&region->lock);
 
-	/* Fetch page data from the owning node */
-	kaddr = kmap(page);
-	ret = uck_net_fetch_page(region, page_index, kaddr);
-	kunmap(page);
+	/* Try batch prefetch first, fall back to single page */
+	if (uck_rdma_available()) {
+		kaddr = kmap(page);
+		ret = uck_rdma_fetch_page(region, page_index, kaddr);
+		kunmap(page);
+	} else {
+		pgoff_t prefetch[UCK_BATCH_MAX_PAGES];
+		int nr_prefetch;
+
+		mutex_lock(&region->lock);
+		nr_prefetch = uck_build_prefetch_list(region, page_index,
+						      prefetch,
+						      UCK_PREFETCH_WINDOW);
+		mutex_unlock(&region->lock);
+
+		if (nr_prefetch > 1) {
+			ret = uck_net_fetch_pages_batch(region, prefetch,
+							nr_prefetch);
+			/* Check if faulting page was fetched */
+			if (ret > 0) {
+				mutex_lock(&region->lock);
+				entry = uck_page_lookup(region, page_index);
+				if (entry && entry->page) {
+					__free_page(page);
+					page = entry->page;
+					get_page(page);
+					if (is_write) {
+						uck_invalidate_remote_copies(
+							region, page_index);
+						entry->state =
+							UCK_PAGE_EXCLUSIVE;
+						entry->write_mapped = true;
+					}
+					mutex_unlock(&region->lock);
+					vmf->page = page;
+					return 0;
+				}
+				mutex_unlock(&region->lock);
+			}
+		}
+
+		/* Fallback: single page fetch */
+		kaddr = kmap(page);
+		ret = uck_net_fetch_page(region, page_index, kaddr);
+		kunmap(page);
+	}
 
 	if (ret < 0) {
 		/* Network fetch failed - if we're the owner, page is just zero */
 		if (region->info.owner_node == uck_state.local_node.node_id) {
-			/* We own it, zero page is correct */
 			ret = 0;
 		} else {
 			pr_err("uck: fetch page %lu from owner failed: %d\n",
@@ -115,7 +179,13 @@ static vm_fault_t uck_fault(struct vm_fault *vmf)
 
 	mutex_lock(&region->lock);
 	entry->page = page;
-	entry->state = UCK_PAGE_SHARED;
+	if (is_write) {
+		entry->state = UCK_PAGE_EXCLUSIVE;
+		entry->write_mapped = true;
+	} else {
+		entry->state = UCK_PAGE_SHARED;
+		entry->write_mapped = false;
+	}
 	get_page(page);
 	mutex_unlock(&region->lock);
 
@@ -123,8 +193,62 @@ static vm_fault_t uck_fault(struct vm_fault *vmf)
 	return 0;
 }
 
+/*
+ * Invalidate remote copies of a page before allowing a local write.
+ * Sends UCK_MSG_INVALIDATE to all nodes that might have a copy.
+ */
+static void uck_invalidate_remote_copies(struct uck_region *region,
+					  pgoff_t page_index)
+{
+	struct uck_msg_hdr inv;
+	int i;
+
+	memset(&inv, 0, sizeof(inv));
+	inv.type = UCK_MSG_INVALIDATE;
+	inv.src_node = uck_state.local_node.node_id;
+	inv.region_id = region->info.region_id;
+	inv.page_offset = (u64)page_index << PAGE_SHIFT;
+
+	for (i = 0; i < uck_state.num_nodes; i++) {
+		struct uck_remote_node *node = &uck_state.nodes[i];
+		if (!node->alive)
+			continue;
+		uck_net_send_to_node(node->info.node_id, &inv, sizeof(inv));
+	}
+}
+
+static vm_fault_t uck_page_mkwrite(struct vm_fault *vmf)
+{
+	struct vm_area_struct *vma = vmf->vma;
+	struct uck_region *region = vma->vm_private_data;
+	unsigned long offset;
+	pgoff_t page_index;
+	struct uck_page_entry *entry;
+
+	if (!region)
+		return VM_FAULT_SIGBUS;
+
+	offset = vmf->address - vma->vm_start;
+	page_index = offset >> PAGE_SHIFT;
+
+	pr_info_ratelimited("uck: page_mkwrite region %llu page %lu\n",
+			    region->info.region_id, page_index);
+
+	mutex_lock(&region->lock);
+	entry = uck_page_lookup(region, page_index);
+	if (entry && entry->state == UCK_PAGE_SHARED) {
+		uck_invalidate_remote_copies(region, page_index);
+		entry->state = UCK_PAGE_EXCLUSIVE;
+		entry->write_mapped = true;
+	}
+	mutex_unlock(&region->lock);
+
+	return VM_FAULT_LOCKED;
+}
+
 static const struct vm_operations_struct uck_vm_ops = {
 	.fault = uck_fault,
+	.page_mkwrite = uck_page_mkwrite,
 };
 
 /* ---- File operations ---- */
@@ -303,6 +427,27 @@ static long uck_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		break;
 	}
 
+	case UCK_IOC_FUTEX: {
+		struct uck_futex_req freq;
+		if (copy_from_user(&freq, (void __user *)arg, sizeof(freq)))
+			return -EFAULT;
+		ret = uck_futex_op(&freq);
+		break;
+	}
+
+	case UCK_IOC_NODE_LEAVE:
+		ret = uck_node_leave_graceful();
+		break;
+
+	case UCK_IOC_GET_CGROUP: {
+		struct uck_cgroup_stats cstats;
+		uck_cgroup_update_local();
+		cstats = uck_state.local_cgroup_stats;
+		if (copy_to_user((void __user *)arg, &cstats, sizeof(cstats)))
+			return -EFAULT;
+		break;
+	}
+
 	default:
 		ret = -ENOTTY;
 	}
@@ -375,6 +520,15 @@ static int __init uck_init(void)
 	if (ret < 0)
 		pr_warn("uck: hypervisor init failed: %d (non-fatal)\n", ret);
 
+	/* Initialize distributed futex */
+	uck_futex_init();
+
+	/* Initialize cgroup accounting */
+	uck_cgroup_init();
+
+	/* Initialize RDMA transport (falls back to TCP if unavailable) */
+	uck_rdma_init();
+
 	return 0;
 
 err_device:
@@ -388,6 +542,9 @@ err_cdev:
 
 static void __exit uck_exit(void)
 {
+	uck_rdma_exit();
+	uck_cgroup_exit();
+	uck_futex_exit();
 	uck_hyper_stop();
 	uck_loadbal_stop();
 	uck_heartbeat_stop();

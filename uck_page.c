@@ -55,6 +55,7 @@ struct uck_page_entry *uck_page_alloc_entry(struct uck_region *region,
 	entry->state = UCK_PAGE_INVALID;
 	entry->page = NULL;
 	entry->owner_node = region->info.owner_node;
+	entry->write_mapped = false;
 
 	uck_page_insert(region, entry);
 	return entry;
