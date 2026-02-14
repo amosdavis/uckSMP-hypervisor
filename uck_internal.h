@@ -11,8 +11,16 @@
 #include <linux/kthread.h>
 #include <linux/completion.h>
 #include <linux/proc_fs.h>
+#include <linux/version.h>
 
 #include "uck.h"
+
+/* class_create() changed signature in kernel 6.4 */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0)
+#define uck_class_create(name) class_create(name)
+#else
+#define uck_class_create(name) class_create(THIS_MODULE, name)
+#endif
 
 /* Per-page tracking entry */
 struct uck_page_entry {

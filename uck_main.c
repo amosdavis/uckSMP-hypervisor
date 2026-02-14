@@ -491,7 +491,7 @@ static int __init uck_init(void)
 	}
 
 	/* Create device class and device node */
-	uck_class = class_create(THIS_MODULE, UCK_DEVICE_NAME);
+	uck_class = uck_class_create(UCK_DEVICE_NAME);
 	if (IS_ERR(uck_class)) {
 		ret = PTR_ERR(uck_class);
 		pr_err("uck: failed to create class\n");

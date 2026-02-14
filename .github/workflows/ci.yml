@@ -46,10 +46,10 @@ jobs:
         include:
           - kernel: '6.1'
             container: debian:bookworm
-            headers: linux-headers-6.1.0-28-amd64
+            headers: linux-headers-amd64
           - kernel: '6.6'
             container: debian:trixie
-            headers: linux-headers-6.6.13+bpo-amd64
+            headers: linux-headers-amd64
           - kernel: latest
             container: debian:sid
             headers: linux-headers-amd64
