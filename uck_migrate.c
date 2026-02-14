@@ -195,7 +195,7 @@ void uck_handle_proc_state(struct socket *client, struct uck_msg_hdr *hdr)
 	}
 
 	uck_audit_log("migration", "received migration for pid %d from node %u",
-		      hdr->orig_pid, hdr->src_node);
+		      inc->hdr.pid, hdr->src_node);
 
 	pr_info("uck: receiving process pid=%u from node %u "
 		"(%llu VMAs, %u FDs)\n",
@@ -244,17 +244,17 @@ void uck_handle_proc_state(struct socket *client, struct uck_msg_hdr *hdr)
 	}
 
 	/* Verify CRC32 integrity of received state */
-	if (hdr->crc32 != 0) {
-		u32 computed_crc = crc32(0, (const u8 *)&hdr,
+	if (inc->hdr.crc32 != 0) {
+		u32 computed_crc = crc32(0, (const u8 *)&inc->hdr,
 					 offsetof(struct uck_proc_state_hdr,
 						  crc32));
-		if (computed_crc != hdr->crc32) {
+		if (computed_crc != inc->hdr.crc32) {
 			pr_err("uck: migration CRC32 mismatch for pid %d "
 			       "(expected 0x%08x, got 0x%08x)\n",
-			       hdr->orig_pid, hdr->crc32, computed_crc);
+			       inc->hdr.pid, inc->hdr.crc32, computed_crc);
 			uck_audit_log("migration",
 				      "CRC32 mismatch for pid %d — aborting",
-				      hdr->orig_pid);
+				      inc->hdr.pid);
 			atomic_long_inc(&uck_state.err_migrate);
 			return;
 		}
@@ -264,7 +264,7 @@ void uck_handle_proc_state(struct socket *client, struct uck_msg_hdr *hdr)
 	uck_launch_restored_process(inc);
 
 	uck_audit_log("migration", "pid %d migration from node %u complete",
-		      hdr->orig_pid, hdr->src_node);
+		      inc->hdr.pid, inc->hdr.src_node);
 
 	uck_free_incoming(inc);
 }
